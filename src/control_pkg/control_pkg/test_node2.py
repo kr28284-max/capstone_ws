@@ -201,7 +201,7 @@ class MasterNode(Node):
 
         self.get_logger().info("✅ 서버 연결 완료. 초기 포즈(Home) 이동 중...")
         # 초기 자세 (홈 자세)
-        self.send_arm_joint_topic([0.0, -44.0, 0.0, 117.0])
+        self.send_arm_joint_topic([0.0, -21.0, -8.0, 112.0])
         self.send_gripper_blocking(-0.01) # 그리퍼 살짝 닫기
         time.sleep(3.5)
         
@@ -320,8 +320,9 @@ class MasterNode(Node):
             
             # 7. 홈으로 복귀
             self.get_logger().info("🏠 홈 자세로 복귀합니다.")
-            self.send_arm_joint_topic([0.0, -44.0, 0.0, 117.0])
-            time.sleep(3.0)
+            self.send_arm_joint_topic([0.0, -21.0, -8.0, 112.0])
+            # 인식 안정화를 위해 홈 자세에서 5초 대기
+            time.sleep(5.0)
 
         except Exception as e:
             self.get_logger().error(f"‼️ 시퀀스 실행 중 오류 발생: {e}")

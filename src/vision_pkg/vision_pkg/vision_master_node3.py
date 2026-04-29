@@ -12,11 +12,28 @@ class VisionNode(Node):
     def __init__(self):
         super().__init__('vision_node')
 
+        # ------------------------------------------------------------
+        # base_link 변환 파라미터 (관측 자세 기준)
+        # ------------------------------------------------------------
+        # 아래 값은 "물체 인식할 때 로봇이 서 있는 고정 자세"에서,
+        # 카메라 원점이 base_link 기준 어디에 있는지를 의미합니다. (단위: m)
+        # 실기에서 한 번 캘리브레이션 후 값만 조정하면 됩니다.
+        self.cam_origin_x_in_base = 0.023  # base_link x(전방) 방향 오프셋
+        self.cam_origin_y_in_base = 0.000  # base_link y(좌측) 방향 오프셋
+        self.cam_origin_z_in_base = 0.26  # base_link z(상방) 방향 오프셋(카메라 높이 26cm)
+        # 카메라가 그리퍼 중심보다 +X 방향(전방)으로 떨어진 거리 (m)
+        # 그리퍼 중심 목표로 쓰려면 물체 X에서 이 값을 빼서 보정합니다.
+        self.camera_to_gripper_x = -0.2
+        # 카메라가 그리퍼 중심보다 +Y 방향(좌측)으로 떨어진 거리 (m)
+        # 즉, 그리퍼 중심 목표로 쓰려면 물체 Y에서 이 값을 빼서 보정합니다.
+        self.camera_to_gripper_y = -0.0325
+
         # 1. 모델 로드 및 CPU 최적화 설정
         # 가중치 파일 경로는 본인의 환경에 맞춰 수정하세요.
         self.model = YOLO("/home/user/capstone_ws/best.pt")
         self.class_names = self.model.names
         self.prev_time = 0
+        self.last_pub_log_time = 0.0
         
         # 2. 리얼센스 파이프라인 설정 (노트북 직결 모드)
         self.pipeline = rs.pipeline()
@@ -50,10 +67,9 @@ class VisionNode(Node):
             # 프레임 수신 및 정렬
             frames = self.pipeline.wait_for_frames(timeout_ms=100)
             aligned_frames = self.align.process(frames)
-            depth_frame = aligned_frames.get_depth_frame()
             color_frame = aligned_frames.get_color_frame()
 
-            if not depth_frame or not color_frame:
+            if not color_frame:
                 return
 
             color_image = np.asanyarray(color_frame.get_data())
@@ -77,45 +93,68 @@ class VisionNode(Node):
                     u, v = int((xyxy[0] + xyxy[2]) / 2), int((xyxy[1] + xyxy[3]) / 2)
                     u, v = max(0, min(u, 639)), max(0, min(v, 479))
                     
-                    # 뎁스(거리) 값 추출
-                    z_val = depth_frame.get_distance(u, v)
+                    # --------------------------------------------------------
+                    # Depth 미사용 모드:
+                    # 카메라가 바닥을 내려다보는 홈 자세에서, 카메라 높이(26cm)를
+                    # 투영 거리로 사용해 픽셀을 실제 평면 좌표로 환산합니다.
+                    # --------------------------------------------------------
+                    fx = self.intrinsics.fx
+                    fy = self.intrinsics.fy
+                    cx = self.intrinsics.ppx
+                    cy = self.intrinsics.ppy
 
-                    # 10cm ~ 1m 사이의 유효한 값만 처리
-                    if 0.1 < z_val < 1.0: 
-                        # 2D 픽셀 -> 3D 좌표 변환 (카메라 기준 좌표계)
-                        point_3d = rs.rs2_deproject_pixel_to_point(self.intrinsics, [u, v], z_val)
-                        
-                        # 🌟 [좌표계 변환 핵심] 카메라 축을 로봇 베이스 축으로 매핑 (예시)
-                        # 카메라 Z(깊이) -> 로봇 X(앞뒤)
-                        # 카메라 X(가로) -> 로봇 -Y(좌우)
-                        # 카메라 Y(세로) -> 로봇 -Z(상하)
-                        robot_x = point_3d[0]
-                        robot_y = point_3d[1]
-                        robot_z = point_3d[2]
+                    # optical frame 평면 좌표 (m)
+                    cam_x = (u - cx) / fx * self.cam_origin_z_in_base
+                    cam_y = (v - cy) / fy * self.cam_origin_z_in_base
 
-                        # 4. 마스터 노드로 발행 (m 단위)
-                        target_msg = Point()
-                        target_msg.x = float(robot_x)
-                        target_msg.y = float(robot_y)
-                        target_msg.z = float(robot_z)
-                        self.target_pub.publish(target_msg)
+                    # --------------------------------------------------------
+                    # 카메라(optical frame) -> base_link 좌표 변환
+                    # --------------------------------------------------------
+                    # 가정: 홈 자세에서 카메라가 바닥을 향함.
+                    #   optical +X(이미지 오른쪽) -> base -Y
+                    #   optical +Y(이미지 아래)   -> base -X
+                    # 필요하면 부호는 실기 기준으로 조정하세요.
+                    robot_x = self.cam_origin_x_in_base - cam_y
+                    robot_y = self.cam_origin_y_in_base - cam_x
 
-                        # 🎨 [시각화: 요청하신 스타일 적용]
-                        blue_color = (255, 0, 0)
-                        # 파란색 바운딩 박스
-                        cv2.rectangle(display_img, (xyxy[0], xyxy[1]), (xyxy[2], xyxy[3]), blue_color, 2)
-                        
-                        # 상단 라벨 (이름 + 신뢰도)
-                        label_top = f"{cls_name.upper()} {conf:.2f}"
-                        (tw, th), _ = cv2.getTextSize(label_top, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-                        cv2.rectangle(display_img, (xyxy[0], xyxy[1] - th - 10), (xyxy[0] + tw, xyxy[1]), blue_color, -1)
-                        cv2.putText(display_img, label_top, (xyxy[0], xyxy[1] - 7), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                    # 카메라-그리퍼 오프셋 보정
+                    robot_x = robot_x - self.camera_to_gripper_x
+                    robot_y = robot_y - self.camera_to_gripper_y
 
-                        # 하단 XYZ 좌표 (mm 단위 표시)
-                        label_bot = f"X:{robot_x*1000:.1f} Y:{robot_y*1000:.1f} Z:{robot_z*1000:.1f}"
-                        cv2.putText(display_img, label_bot, (xyxy[0], xyxy[3] - 10), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                    # 물체가 바닥 위에 있다고 보고 base_link 높이는 고정
+                    robot_z = 0.035
+
+                    # 4. 마스터 노드로 발행 (m 단위)
+                    target_msg = Point()
+                    target_msg.x = float(robot_x)
+                    target_msg.y = float(robot_y)
+                    target_msg.z = float(robot_z)
+                    self.target_pub.publish(target_msg)
+                    # 발행 좌표 로그 (너무 많이 찍히지 않도록 0.5초 간격 제한)
+                    now = time.time()
+                    if now - self.last_pub_log_time > 0.5:
+                        self.get_logger().info(
+                            f"📤 publish /aruco_target_point (base_link): "
+                            f"X={robot_x:.3f}, Y={robot_y:.3f}, Z={robot_z:.3f}"
+                        )
+                        self.last_pub_log_time = now
+
+                    # 🎨 [시각화: 요청하신 스타일 적용]
+                    blue_color = (255, 0, 0)
+                    # 파란색 바운딩 박스
+                    cv2.rectangle(display_img, (xyxy[0], xyxy[1]), (xyxy[2], xyxy[3]), blue_color, 2)
+                    
+                    # 상단 라벨 (이름 + 신뢰도)
+                    label_top = f"{cls_name.upper()} {conf:.2f}"
+                    (tw, th), _ = cv2.getTextSize(label_top, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                    cv2.rectangle(display_img, (xyxy[0], xyxy[1] - th - 10), (xyxy[0] + tw, xyxy[1]), blue_color, -1)
+                    cv2.putText(display_img, label_top, (xyxy[0], xyxy[1] - 7), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+                    # 하단 XYZ 좌표 (base_link 기준, mm 단위 표시)
+                    label_bot = f"X:{robot_x*1000:.1f} Y:{robot_y*1000:.1f} Z:{robot_z*1000:.1f}"
+                    cv2.putText(display_img, label_bot, (xyxy[0], xyxy[3] - 10), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
             # FPS 표시
             curr_time = time.time()
