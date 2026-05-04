@@ -1,174 +1,80 @@
-# import rclpy
-# from rclpy.node import Node
-# from geometry_msgs.msg import Point
-# import pyrealsense2 as rs
-# from ultralytics import YOLO
-# import cv2
-# import numpy as np
-# import threading
-# import time
-
-# class VisionNode(Node):
-#     def __init__(self):
-#         super().__init__('vision_node')
-
-#         # [수정] CPU 환경에 맞춰 설정
-#         self.get_logger().info("💻 그래픽카드가 없어 CPU 모드로 동작합니다.")
-
-#         # [수정] 모델은 한 번만 로드합니다. (중복 선언 제거)
-#         self.model = YOLO("/home/user/capstone_ws/wheel.pt")
-#         self.class_names = self.model.names
-        
-#         # [수정] FPS 계산을 위한 변수 초기화 (누락되었던 부분)
-#         self.prev_time = 0
-        
-#         # 2. 리얼센스 파이프라인 설정
-#         self.pipeline = rs.pipeline()
-#         config = rs.config()
-#         # CPU 부하를 줄이기 위해 60 FPS가 너무 무거우면 30으로 낮추는 것이 좋습니다.
-#         config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-#         config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
-        
-#         profile = self.pipeline.start(config)
-#         self.align = rs.align(rs.stream.color)
-#         self.intrinsics = profile.get_stream(rs.stream.color).as_video_stream_profile().get_intrinsics()
-
-#         self.latest_frame = None
-#         self.frame_lock = threading.Lock()
-
-#         # 목표 좌표 발행 퍼블리셔
-#         self.target_pub = self.create_publisher(Point, '/aruco_target_point', 10)
-
-#         # 타이머 주기 (0.01초는 CPU에 무리가 갈 수 있어 0.03(30fps) 정도로 조정 추천)
-#         self.create_timer(0.03, self.process_frame)
-        
-#         self.get_logger().info("🚀 로보컵 스타일 비전 노드 시작 (CPU 모드)")
-
-#     def process_frame(self):
-#         try:
-#             frames = self.pipeline.wait_for_frames(timeout_ms=100)
-#             aligned_frames = self.align.process(frames)
-#             depth_frame = aligned_frames.get_depth_frame()
-#             color_frame = aligned_frames.get_color_frame()
-
-#             if not depth_frame or not color_frame:
-#                 return
-
-#             color_image = np.asanyarray(color_frame.get_data())
-#             display_img = color_image.copy()
-
-#             # [수정] half=True는 GPU 전용 옵션입니다. CPU에서는 빼거나 False로 해야 에러가 안 납니다.
-#             results = self.model.predict(display_img, verbose=False, device='cpu')[0]
-
-#             if results.boxes is not None:
-#                 for box in results.boxes:
-#                     xyxy = box.xyxy[0].cpu().numpy().astype(int)
-#                     cls_id = int(box.cls[0])
-#                     cls_name = self.class_names[cls_id]
-                    
-#                     u, v = int((xyxy[0] + xyxy[2]) / 2), int((xyxy[1] + xyxy[3]) / 2)
-#                     u, v = max(0, min(u, 639)), max(0, min(v, 479))
-                    
-#                     z_val = depth_frame.get_distance(u, v)
-
-#                     if 0.1 < z_val < 1.0: 
-#                         point_3d = rs.rs2_deproject_pixel_to_point(self.intrinsics, [u, v], z_val)
-#                         x_r, y_r, z_r = point_3d[0], point_3d[1], point_3d[2]
-
-#                         target_msg = Point()
-#                         target_msg.x = float(x_r)
-#                         target_msg.y = float(y_r)
-#                         target_msg.z = float(z_r)
-#                         self.target_pub.publish(target_msg)
-
-#                         # 시각화 부분
-#                         color = (0, 255, 0)
-#                         cv2.rectangle(display_img, (xyxy[0], xyxy[1]), (xyxy[2], xyxy[3]), color, 2)
-                        
-#                         label = f"{cls_name.upper()} | {z_val*1000:.0f}mm"
-#                         (label_w, label_h), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-#                         cv2.rectangle(display_img, (xyxy[0], xyxy[1]-label_h-10), (xyxy[0]+label_w, xyxy[1]), (0,0,0), -1)
-#                         cv2.putText(display_img, label, (xyxy[0], xyxy[1]-7), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-
-#             # FPS 표시
-#             curr_time = time.time()
-#             if self.prev_time > 0:
-#                 fps = 1 / (curr_time - self.prev_time)
-#                 cv2.putText(display_img, f"FPS: {fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-#             self.prev_time = curr_time
-
-#             with self.frame_lock:
-#                 self.latest_frame = display_img
-
-#         except Exception as e:
-#             self.get_logger().error(f"Error: {e}")
-
-# def main():
-#     rclpy.init()
-#     node = VisionNode()
-#     ros_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
-#     ros_thread.start()
-    
-#     try:
-#         while rclpy.ok():
-#             if node.latest_frame is not None:
-#                 with node.frame_lock:
-#                     cv2.imshow("Robocup Style Vision", node.latest_frame)
-#             if cv2.waitKey(1) & 0xFF == 27:
-#                 break
-#     finally:
-#         node.pipeline.stop()
-#         cv2.destroyAllWindows()
-#         node.destroy_node()
-#         rclpy.shutdown()
-
-# if __name__ == '__main__':
-#     main()
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Point
+from std_msgs.msg import String
 import pyrealsense2 as rs
 from ultralytics import YOLO
 import cv2
 import numpy as np
 import threading
 import time
+import json
 
 class VisionNode(Node):
     def __init__(self):
         super().__init__('vision_node')
 
-        # [최적화] CPU 환경 최적화 설정
+        # ------------------------------------------------------------
+        # base_link 변환 파라미터 (관측 자세 기준)
+        # ------------------------------------------------------------
+        # 아래 값은 "물체 인식할 때 로봇이 서 있는 고정 자세"에서,
+        # 카메라 원점이 base_link 기준 어디에 있는지를 의미합니다. (단위: m)
+        # 실기에서 한 번 캘리브레이션 후 값만 조정하면 됩니다.
+        self.cam_origin_x_in_base = 0.023  # base_link x(전방) 방향 오프셋
+        self.cam_origin_y_in_base = 0.000  # base_link y(좌측) 방향 오프셋
+        self.cam_origin_z_in_base = 0.26  # base_link z(상방) 방향 오프셋(카메라 높이 26cm)
+        # 카메라가 그리퍼 중심보다 +X 방향(전방)으로 떨어진 거리 (m)
+        # 그리퍼 중심 목표로 쓰려면 물체 X에서 이 값을 빼서 보정합니다.
+        self.camera_to_gripper_x = -0.2
+        # 카메라가 그리퍼 중심보다 +Y 방향(좌측)으로 떨어진 거리 (m)
+        # 즉, 그리퍼 중심 목표로 쓰려면 물체 Y에서 이 값을 빼서 보정합니다.
+        self.camera_to_gripper_y = -0.0325
+
+        # 1. 모델 로드 및 CPU 최적화 설정
+        # 가중치 파일 경로는 본인의 환경에 맞춰 수정하세요.
         self.model = YOLO("/home/user/capstone_ws/best.pt")
         self.class_names = self.model.names
         self.prev_time = 0
+        self.last_pub_log_time = 0.0
         
-        # 리얼센스 파이프라인 설정
+        # 2. 리얼센스 파이프라인 설정 (노트북 직결 모드)
         self.pipeline = rs.pipeline()
         config = rs.config()
+        # CPU 부하를 줄이기 위해 30 FPS로 설정합니다.
         config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
         config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
         
-        profile = self.pipeline.start(config)
+        try:
+            profile = self.pipeline.start(config)
+            self.get_logger().info("✅ 리얼센스 카메라 연결 성공")
+        except Exception as e:
+            self.get_logger().error(f"❌ 카메라 시작 실패: {e}")
+            return
+
         self.align = rs.align(rs.stream.color)
         self.intrinsics = profile.get_stream(rs.stream.color).as_video_stream_profile().get_intrinsics()
 
         self.latest_frame = None
         self.frame_lock = threading.Lock()
-        self.target_pub = self.create_publisher(Point, '/aruco_target_point', 10)
 
-        # 타이머 설정
-        self.create_timer(0.01, self.process_frame)
-        self.get_logger().info("🚀 6D Pose 스타일 시각화 모드 가동")
+        # 3. 좌표 발행 퍼블리셔 (마스터 노드가 구독하는 이름)
+        self.target_pub = self.create_publisher(Point, '/aruco_target_point', 10)
+        self.detection_pub = self.create_publisher(String, '/vision/detections', 10)
+
+        # 연산 주기를 0.03초(약 30 FPS)로 설정
+        self.create_timer(0.03, self.process_frame)
+        self.get_logger().info("🚀 6D Pose 스타일 비전 시스템 가동 시작")
 
     def process_frame(self):
         try:
+            # 프레임 수신 및 정렬
             frames = self.pipeline.wait_for_frames(timeout_ms=100)
             aligned_frames = self.align.process(frames)
             depth_frame = aligned_frames.get_depth_frame()
             color_frame = aligned_frames.get_color_frame()
 
-            if not depth_frame or not color_frame: return
+            if not color_frame or not depth_frame:
+                return
 
             color_image = np.asanyarray(color_frame.get_data())
             display_img = color_image.copy()
@@ -176,9 +82,10 @@ class VisionNode(Node):
             # 중앙 빨간 점 (화면 중심 기준점)
             cv2.circle(display_img, (320, 240), 4, (0, 0, 255), -1)
 
-            # YOLO 추론
+            # 🚀 [핵심 최적화] imgsz=320 설정으로 CPU 속도 향상
             results = self.model.predict(display_img, verbose=False, imgsz=320, device='cpu')[0]
 
+            detections_payload = []
             if results.boxes is not None:
                 for box in results.boxes:
                     # 데이터 추출
@@ -187,53 +94,112 @@ class VisionNode(Node):
                     cls_id = int(box.cls[0])
                     cls_name = self.class_names[cls_id]
                     
+                    # 객체 중심점(u, v) 계산 및 경계 처리
                     u, v = int((xyxy[0] + xyxy[2]) / 2), int((xyxy[1] + xyxy[3]) / 2)
                     u, v = max(0, min(u, 639)), max(0, min(v, 479))
-                    z_val = depth_frame.get_distance(u, v)
+                    
+                    # --------------------------------------------------------
+                    # Depth 기반 좌표 계산:
+                    # 홈/인식 자세가 바뀌어도 고정 높이 가정보다 안정적입니다.
+                    # --------------------------------------------------------
+                    depth_m = depth_frame.get_distance(u, v)
+                    if 0.10 < depth_m < 1.20:
+                        point_3d = rs.rs2_deproject_pixel_to_point(self.intrinsics, [u, v], depth_m)
+                        cam_x = float(point_3d[0])  # optical +X (right)
+                        cam_y = float(point_3d[1])  # optical +Y (down)
+                    else:
+                        # 깊이값이 불량하면 기존 평면 근사로 fallback
+                        fx = self.intrinsics.fx
+                        fy = self.intrinsics.fy
+                        cx = self.intrinsics.ppx
+                        cy = self.intrinsics.ppy
+                        cam_x = (u - cx) / fx * self.cam_origin_z_in_base
+                        cam_y = (v - cy) / fy * self.cam_origin_z_in_base
 
-                    if 0.1 < z_val < 1.0: 
-                        point_3d = rs.rs2_deproject_pixel_to_point(self.intrinsics, [u, v], z_val)
-                        # 사진처럼 mm 단위로 표시하려면 *1000을 해줍니다.
-                        rx, ry, rz = point_3d[0]*1000, point_3d[1]*1000, point_3d[2]*1000
+                    # --------------------------------------------------------
+                    # 카메라(optical frame) -> base_link 좌표 변환
+                    # --------------------------------------------------------
+                    # 가정: 홈 자세에서 카메라가 바닥을 향함.
+                    #   optical +X(이미지 오른쪽) -> base -Y
+                    #   optical +Y(이미지 아래)   -> base -X
+                    # 필요하면 부호는 실기 기준으로 조정하세요.
+                    robot_x = self.cam_origin_x_in_base - cam_y
+                    robot_y = self.cam_origin_y_in_base - cam_x
 
-                        target_msg = Point()
-                        target_msg.x, target_msg.y, target_msg.z = float(rx), float(ry), float(rz)
-                        self.target_pub.publish(target_msg)
+                    # 카메라-그리퍼 오프셋 보정
+                    robot_x = robot_x - self.camera_to_gripper_x
+                    robot_y = robot_y - self.camera_to_gripper_y
 
-                        # 🎨 [시각화: 사진과 동일한 스타일 적용]
-                        # 1. 파란색 박스 (BGR: 255, 0, 0)
-                        blue_color = (255, 0, 0)
-                        cv2.rectangle(display_img, (xyxy[0], xyxy[1]), (xyxy[2], xyxy[3]), blue_color, 2)
-                        
-                        # 2. 상단 클래스 라벨 (파란색 배경 + 흰색 글씨)
-                        label_top = f"{cls_name} {conf:.2f}"
-                        (tw, th), _ = cv2.getTextSize(label_top, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-                        cv2.rectangle(display_img, (xyxy[0], xyxy[1] - th - 10), (xyxy[0] + tw, xyxy[1]), blue_color, -1)
-                        cv2.putText(display_img, label_top, (xyxy[0], xyxy[1] - 7), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                    # 물체가 바닥 위에 있다고 보고 base_link 높이는 고정
+                    robot_z = 0.035
 
-                        # 3. 하단 XYZ 좌표 (밝은 초록색 글씨, BGR: 0, 255, 0)
-                        label_bot = f"X:{rx:.1f} Y:{ry:.1f} Z:{rz:.1f}"
-                        # 박스 내부 하단에 위치하도록 조정
-                        cv2.putText(display_img, label_bot, (xyxy[0], xyxy[3] - 10), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                    # 4. 마스터 노드로 발행 (m 단위)
+                    target_msg = Point()
+                    target_msg.x = float(robot_x)
+                    target_msg.y = float(robot_y)
+                    target_msg.z = float(robot_z)
+                    self.target_pub.publish(target_msg)
+
+                    detections_payload.append(
+                        {
+                            "class_id": int(cls_id),
+                            "class_name": str(cls_name).lower(),
+                            "u": float(u),
+                            "v": float(v),
+                            "x": float(robot_x),
+                            "y": float(robot_y),
+                            "z": float(robot_z),
+                        }
+                    )
+                    # 발행 좌표 로그 (너무 많이 찍히지 않도록 0.5초 간격 제한)
+                    now = time.time()
+                    if now - self.last_pub_log_time > 0.5:
+                        self.get_logger().info(
+                            f"📤 publish /aruco_target_point (base_link): "
+                            f"X={robot_x:.3f}, Y={robot_y:.3f}, Z={robot_z:.3f}"
+                        )
+                        self.last_pub_log_time = now
+
+                    # 🎨 [시각화: 요청하신 스타일 적용]
+                    blue_color = (255, 0, 0)
+                    # 파란색 바운딩 박스
+                    cv2.rectangle(display_img, (xyxy[0], xyxy[1]), (xyxy[2], xyxy[3]), blue_color, 2)
+                    
+                    # 상단 라벨 (이름 + 신뢰도)
+                    label_top = f"{cls_name.upper()} {conf:.2f}"
+                    (tw, th), _ = cv2.getTextSize(label_top, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                    cv2.rectangle(display_img, (xyxy[0], xyxy[1] - th - 10), (xyxy[0] + tw, xyxy[1]), blue_color, -1)
+                    cv2.putText(display_img, label_top, (xyxy[0], xyxy[1] - 7), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+                    # 하단 XYZ 좌표 (base_link 기준, mm 단위 표시)
+                    label_bot = f"X:{robot_x*1000:.1f} Y:{robot_y*1000:.1f} Z:{robot_z*1000:.1f}"
+                    cv2.putText(display_img, label_bot, (xyxy[0], xyxy[3] - 10), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+            detections_payload.sort(key=lambda d: d["u"])
+            detections_msg = String()
+            detections_msg.data = json.dumps({"detections": detections_payload}, ensure_ascii=False)
+            self.detection_pub.publish(detections_msg)
 
             # FPS 표시
             curr_time = time.time()
             if self.prev_time > 0:
                 fps = 1 / (curr_time - self.prev_time)
-                cv2.putText(display_img, f"FPS: {fps:.1f}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
+                cv2.putText(display_img, f"FPS: {fps:.1f}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
             self.prev_time = curr_time
 
             with self.frame_lock:
                 self.latest_frame = display_img
 
-        except Exception:
+        except Exception as e:
             pass
 
 def main():
     rclpy.init()
     node = VisionNode()
+    
+    # GUI 출력을 위한 별도 스레드
     ros_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
     ros_thread.start()
     
@@ -241,8 +207,11 @@ def main():
         while rclpy.ok():
             if node.latest_frame is not None:
                 with node.frame_lock:
-                    cv2.imshow("6D Pose (Refined Style)", node.latest_frame)
-            if cv2.waitKey(1) & 0xFF == 27: break
+                    display_frame = node.latest_frame.copy()
+                cv2.imshow("6D Pose Style Vision", display_frame)
+            
+            if cv2.waitKey(1) & 0xFF == 27: # ESC 누르면 종료
+                break
     finally:
         node.pipeline.stop()
         cv2.destroyAllWindows()

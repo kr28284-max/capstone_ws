@@ -22,6 +22,7 @@ setup(
         'console_scripts': [
             'test_node1 = control_pkg.test_node1:main',
             'test_node2 = control_pkg.test_node2:main',
+            'test_node3 = control_pkg.test_node3:main',
         ],
     },
 )

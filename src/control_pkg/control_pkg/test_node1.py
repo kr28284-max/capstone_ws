@@ -28,6 +28,11 @@ class MasterNode(Node):
         self.approach_height = 0.15
         self.ee_link_name = 'end_effector_link'
         self.goal_frame = 'base_link'
+        # 비전 좌표 미세 보정 (m): 현재 조합(vision_master_node2 + test_node1)에서
+        # z 대신 x축으로 살짝 치우치는 현상을 보정.
+        self.pick_offset_x = -0.015
+        self.pick_offset_y = 0.0
+        self.pick_offset_z = 0.0
 
         # 분류/드롭 위치(조인트 이동)
         self.drop_joint_deg = [-117.0, -50.0, 58.0, 59.0]
@@ -70,10 +75,18 @@ class MasterNode(Node):
             return
 
         self.is_busy = True
+        corrected_x = msg.x + self.pick_offset_x
+        corrected_y = msg.y + self.pick_offset_y
+        corrected_z = msg.z + self.pick_offset_z
         self.get_logger().info(
-            f'📥 타겟 수신(base_link): X={msg.x:.3f}, Y={msg.y:.3f}, Z={msg.z:.3f}'
+            f'📥 타겟 수신(base_link): raw=({msg.x:.3f}, {msg.y:.3f}, {msg.z:.3f}) '
+            f'-> corrected=({corrected_x:.3f}, {corrected_y:.3f}, {corrected_z:.3f})'
         )
-        threading.Thread(target=self.execute_sequence_thread, args=(msg.x, msg.y, msg.z), daemon=True).start()
+        threading.Thread(
+            target=self.execute_sequence_thread,
+            args=(corrected_x, corrected_y, corrected_z),
+            daemon=True,
+        ).start()
 
     def send_arm_joint_topic(self, joint_degrees):
         msg = JointTrajectory()

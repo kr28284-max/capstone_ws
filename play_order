@@ -6,4 +6,16 @@ ros2 launch turtlebot3_manipulation_moveit_config moveit_core.launch.py use_sim_
 
 ros2 run vision_pkg vision_master_node2
 
-ros2 run control_pkg test_node1
+ros2 run control_pkg test_node3
+
+
+
+
+
+
+1. 이제 인식후 집는단계가능 
+2. 중복된 물체 없어질때까지 확인 
+3. 여러 물체있을때 원하는물체만 집기
+4. 상자 배치
+5. 손가락 인식후 명령 전달
+6. 통합 
