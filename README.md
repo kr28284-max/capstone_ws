@@ -47,3 +47,17 @@
 cd ~/capstone_ws
 colcon build --symlink-install
 source install/setup.bash
+
+2. 시스템 구동 시퀀스
+Terminal 1 (SSH to Robot):
+ssh [USER_NAME]@[ROBOT_IP]
+ros2 launch turtlebot3_manipulation_bringup hardware.launch.py
+
+Terminal 2 (Remote PC - MoveIt 2):
+ros2 launch turtlebot3_manipulation_moveit_config moveit_core.launch.py use_sim_time:=false
+
+Terminal 3 (Remote PC - Vision):
+ros2 run vision_pkg vision_master_node5
+
+Terminal 4 (Remote PC - Control):
+ros2 run control_pkg test_node3
