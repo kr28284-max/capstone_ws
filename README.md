@@ -57,7 +57,7 @@ Terminal 2 (Remote PC - MoveIt 2):
 ros2 launch turtlebot3_manipulation_moveit_config moveit_core.launch.py use_sim_time:=false
 
 Terminal 3 (Remote PC - Vision):
-ros2 run vision_pkg vision_master_node5
+ros2 run vision_pkg vision_master_node3
 
 Terminal 4 (Remote PC - Control):
-ros2 run control_pkg test_node3
+ros2 run control_pkg test_node5
