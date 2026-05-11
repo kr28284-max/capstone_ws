@@ -23,6 +23,8 @@ setup(
             'test_node1 = control_pkg.test_node1:main',
             'test_node2 = control_pkg.test_node2:main',
             'test_node3 = control_pkg.test_node3:main',
+            'test_node4 = control_pkg.test_node4:main',
+            'test_node5 = control_pkg.test_node5:main',
         ],
     },
 )

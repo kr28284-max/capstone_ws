@@ -30,6 +30,7 @@ setup(
             'vision_master_node3 = vision_pkg.vision_master_node3:main',
             'vision_master_node4 = vision_pkg.vision_master_node4:main',
             'vision_master_node5 = vision_pkg.vision_master_node5:main',
+            'hand_node = vision_pkg.hand:main',
         ],
     },
 )

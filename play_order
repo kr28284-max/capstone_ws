@@ -1,4 +1,4 @@
-ssh fcsl@192.168.50.67
+ssh fcsl@192.168.50.67 66
 
 ros2 launch turtlebot3_manipulation_bringup hardware.launch.py
 

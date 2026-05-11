@@ -52,8 +52,6 @@ class TestNode3(Node):
         self.pick_offset_z = 0.005
 
         # Poses
-        # self.vision_joint_deg = [0.0, -21.0, -8.0, 112.0]
-        # self.home_joint_deg = [0.0, -21.0, -8.0, 112.0]
         self.vision_joint_deg = [0.0, -6.0, -24.0, 108.0]
         self.home_joint_deg = [0.0, -6.0, -24.0, 108.0]
         self.drop_joint_by_cmd = {
@@ -404,6 +402,12 @@ class TestNode3(Node):
         result_future = goal_handle.get_result_async()
         while rclpy.ok() and not result_future.done():
             time.sleep(0.05)
+        result = result_future.result()
+        error_val = getattr(getattr(result, "result", None), "error_code", None)
+        error_val = getattr(error_val, "val", 1)
+        if error_val != 1:
+            self.get_logger().error(f"🚫 MoveIt result error_code={error_val}")
+            return False
         return True
 
     def send_gripper_blocking(self, position: float) -> bool:
