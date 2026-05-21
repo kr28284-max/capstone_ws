@@ -63,7 +63,7 @@ class TestNode6(Node):
         self.bearing_pick_offset_y = 0.0
         self.bearing_pick_offset_z = 0.053
         #boltnut
-        self.boltnut_pick_offset_x = -0.018
+        self.boltnut_pick_offset_x = -0.025
         self.boltnut_pick_offset_y = 0.0
         self.boltnut_pick_offset_z = 0.058
         #gear
@@ -73,7 +73,7 @@ class TestNode6(Node):
         #wheel
         self.wheel_pick_offset_x = 0.0
         self.wheel_pick_offset_y = 0.0
-        self.wheel_pick_offset_z = 0.040
+        self.wheel_pick_offset_z = 0.053
 
 
         self.near_x_threshold_m = 0.210
@@ -370,9 +370,9 @@ class TestNode6(Node):
         self.clear_latest_detections()
 
         if should_start_input_thread:
-            threading.Thread(target=self.wait_for_input, daemon=True).start()
+            threading.Thread(target=self.wait_for_okay_input, daemon=True).start()
 
-    def wait_for_input(self):
+    def wait_for_okay_input(self):
         while rclpy.ok():
             try:
                 text = input('손을 치운 뒤 okay 입력 > ').strip().lower()
@@ -429,8 +429,8 @@ class TestNode6(Node):
                 if target is None:
                     self.get_logger().info(f'{name} class 확인 후 좌표 확정 실패. 총 {count}개 처리 후 종료')
                     break
-                okay = self.execute_enhanced_sequence(cmd, target)
-                if not okay:
+                ok = self.execute_enhanced_sequence(cmd, target)
+                if not ok:
                     self.get_logger().warn('시퀀스 실패로 중단')
                     break
                 count += 1
@@ -540,9 +540,10 @@ class TestNode6(Node):
             self.place_transfer_motion_sec,
         )
 
-        self.send_gripper_blocking(0.019)
-        self.get_logger().info('상자 위치 도착 후 그리퍼 오픈, 0.5초 대기')
+        self.get_logger().info('상자 위치에서 0.5초 대기')
         self.sleep_with_pause(0.5)
+
+        self.send_gripper_blocking(0.019)
         return True
 
     def send_arm_joint_topic(self, joint_degrees: List[float], duration_sec: float = 2.0):
@@ -626,7 +627,7 @@ class TestNode6(Node):
         p_con.constraint_region.primitive_poses.append(target_pose)
         constraints.position_constraints.append(p_con)
 
-        if x < 0.216:
+        if x < 0.205:
             tolerance = 50.0
         else:
             tolerance = 35.0

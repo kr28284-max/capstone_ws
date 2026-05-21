@@ -67,7 +67,7 @@ class TestNode3(Node):
             1: "bearing",
             2: "boltnut",
             3: "gear",
-            4: "wheel",
+            4: "damper",
         }
         # 사용자 명령(1~4) -> YOLO class_id(0-based)
         self.command_class_id = {

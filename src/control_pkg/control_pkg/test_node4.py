@@ -56,7 +56,7 @@ class TestNode4(Node):
             1: 'bearing',
             2: 'boltnut',
             3: 'gear',
-            4: 'wheel',
+            4: 'damper',
         }
         self.command_class_id = {
             1: 0,

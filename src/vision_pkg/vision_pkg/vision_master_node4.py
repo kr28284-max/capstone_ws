@@ -7,7 +7,6 @@ import mediapipe as mp
 import numpy as np
 import pyrealsense2 as rs
 import rclpy
-from collections import deque, Counter
 from geometry_msgs.msg import Point
 from rclpy.node import Node
 from std_msgs.msg import Bool, Int32, String
@@ -29,7 +28,7 @@ class VisionNode(Node):
         self.depth_max_m = 1.20
 
         # YOLO
-        self.model = YOLO('/home/user2/capstone_ws/best2.pt')
+        self.model = YOLO('/home/user2/capstone_ws/best.pt')
         self.class_names = self.model.names
         self.prev_time = 0.0
         self.last_pub_log_time = 0.0
@@ -68,26 +67,6 @@ class VisionNode(Node):
         self.target_pub = self.create_publisher(Point, '/aruco_target_point', 10)
         self.detection_pub = self.create_publisher(String, '/vision/detections', 10)
         self.finger_pub = self.create_publisher(Int32, '/vision/hand_finger_count', 10)
-        self.hand_detected_pub = self.create_publisher(Bool, '/vision/hand_detected', 10)
-
-        self.mode = 'HAND'
-        self.class_map = {
-            1: 'bearing',
-            2: 'boltnut',
-            3: 'gear',
-            4: 'wheel',
-        }
-        self.scan_history = deque(maxlen=30)
-        self.scan_start_time = None
-        self.SCAN_DURATION = 2.0
-        self.object_start_time = None
-        self.OBJECT_DURATION = 4.0
-        self.mediapipe_pause_until = 0
-        self.HAND_CLOSE_MIN_SIZE = 120
-        self.hand_return_start = None
-        self.HAND_RETURN_DURATION = 1.5
-        self.selected_class = None
-        self.last_results = None
 
         # Subscribers
         self.yolo_enable_sub = self.create_subscription(Bool, '/vision/yolo_enable', self.yolo_enable_callback, 10)
@@ -113,13 +92,8 @@ class VisionNode(Node):
         return float(np.median(depths))
 
     @staticmethod
-    def count_fingers(lm, hand_label):
-        fingers = []
-        if hand_label == 'Right':
-            fingers.append(1 if lm[4][0] < lm[3][0] else 0)
-        else:
-            fingers.append(1 if lm[4][0] > lm[3][0] else 0)
-
+    def count_fingers(lm):
+        fingers = [1 if lm[4][0] > lm[3][0] else 0]
         tips = [8, 12, 16, 20]
         pips = [6, 10, 14, 18]
         for tip, pip in zip(tips, pips):
@@ -137,159 +111,38 @@ class VisionNode(Node):
 
             color_image = np.asanyarray(color_frame.get_data())
             display_img = color_image.copy()
-            h, w, _ = display_img.shape
             cv2.circle(display_img, (320, 240), 4, (0, 0, 255), -1)
-            current_time = time.time()
-
-            def put_text_right(text, y, font_scale=0.7, color=(255, 255, 255), thickness=2):
-                (tw, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
-                x = max(10, w - tw - 10)
-                cv2.putText(display_img, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, thickness)
 
             # Hand detection + finger count publish
             rgb = cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB)
             hand_result = self.hands.process(rgb)
             finger_count = -1
-            hand_detected = False
-            hand_close = False
             if hand_result.multi_hand_landmarks:
-                for idx, hand_landmarks in enumerate(hand_result.multi_hand_landmarks):
+                for hand_landmarks in hand_result.multi_hand_landmarks:
                     h, w, _ = display_img.shape
                     lm = [(int(p.x * w), int(p.y * h)) for p in hand_landmarks.landmark]
-
-                    xs = [pt[0] for pt in lm]
-                    ys = [pt[1] for pt in lm]
-                    hand_size = max(max(xs) - min(xs), max(ys) - min(ys))
-                    if hand_size >= self.HAND_CLOSE_MIN_SIZE:
-                        hand_label = (
-                            hand_result.multi_handedness[idx]
-                            .classification[0]
-                            .label
-                        )
-                        finger_count = self.count_fingers(lm, hand_label)
-                        hand_detected = True
-                        hand_close = True
-
-                        self.mp_draw.draw_landmarks(display_img, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
-                        display_label = 'Left' if hand_label == 'Right' else 'Right'
-                        put_text_right(
-                            f"{display_label} Hand",
-                            90,
-                            font_scale=0.6,
-                            color=(255, 255, 0),
-                            thickness=2,
-                        )
-                    else:
-                        cv2.putText(
-                            display_img,
-                            "HAND TOO FAR",
-                            (10, 60),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.7,
-                            (0, 0, 255),
-                            2
-                        )
+                    finger_count = self.count_fingers(lm)
+                    self.mp_draw.draw_landmarks(display_img, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
                     break
 
             finger_msg = Int32()
             finger_msg.data = int(finger_count)
             self.finger_pub.publish(finger_msg)
-            hand_msg = Bool()
-            hand_msg.data = bool(hand_detected)
-            self.hand_detected_pub.publish(hand_msg)
+            if finger_count >= 0:
+                cv2.putText(
+                    display_img,
+                    f'Fingers: {finger_count}',
+                    (20, 85),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (0, 255, 255),
+                    2,
+                )
 
-            if self.mode == 'HAND':
-                if finger_count in self.class_map and hand_close:
-                    if self.scan_start_time is None:
-                        self.scan_start_time = current_time
-                    self.scan_history.append(finger_count)
-                    if current_time - self.scan_start_time > self.SCAN_DURATION:
-                        most_common = Counter(self.scan_history).most_common(1)[0][0]
-                        self.selected_class = self.class_map[most_common]
-                        self.mode = 'OBJECT'
-                        self.object_start_time = current_time
-                        self.mediapipe_pause_until = current_time + 2.0
-                        self.scan_history.clear()
-                        self.scan_start_time = None
-                else:
-                    self.scan_start_time = None
-                    self.scan_history.clear()
-
-                if finger_count >= 0:
-                    put_text_right(
-                        f'Fingers: {finger_count}',
-                        115,
-                        font_scale=0.8,
-                        color=(0, 255, 255),
-                        thickness=2,
-                    )
-                if self.scan_start_time:
-                    put_text_right(
-                        'SCANNING...',
-                        145,
-                        font_scale=0.6,
-                        color=(0, 255, 255),
-                        thickness=2,
-                    )
-            else:
-                if hand_close:
-                    if self.hand_return_start is None:
-                        self.hand_return_start = current_time
-                    elif current_time - self.hand_return_start > self.HAND_RETURN_DURATION:
-                        self.mode = 'HAND'
-                        self.selected_class = None
-                        self.last_results = None
-                        self.scan_history.clear()
-                        self.scan_start_time = None
-                        self.hand_return_start = None
-
-                        put_text_right(
-                            'RETURN TO HAND MODE',
-                            120,
-                            font_scale=0.7,
-                            color=(0, 0, 255),
-                            thickness=2,
-                        )
-                else:
-                    self.hand_return_start = None
-
-                if self.selected_class:
-                    put_text_right(
-                        f'TARGET: {self.selected_class}',
-                        30,
-                        font_scale=0.7,
-                        color=(255, 0, 0),
-                        thickness=2,
-                    )
-                if current_time < self.mediapipe_pause_until:
-                    put_text_right(
-                        'Waiting',
-                        60,
-                        font_scale=0.6,
-                        color=(0, 165, 255),
-                        thickness=2,
-                    )
-                else:
-                    put_text_right(
-                        'SHOW HAND TO RETURN',
-                        60,
-                        font_scale=0.6,
-                        color=(0, 255, 255),
-                        thickness=2,
-                    )
-
-                if self.object_start_time is not None and current_time - self.object_start_time > self.OBJECT_DURATION:
-                    self.mode = 'HAND'
-                    self.selected_class = None
-                    self.last_results = None
-                    self.scan_history.clear()
-                    self.scan_start_time = None
-                    self.hand_return_start = None
-
-            detections_payload = []
+            # YOLO detection
             if self.yolo_enabled:
                 results = self.model.predict(display_img, verbose=False, imgsz=320, device='cpu')[0]
-                self.last_results = results
+                detections_payload = []
 
                 if results.boxes is not None:
                     for box in results.boxes:
@@ -320,19 +173,11 @@ class VisionNode(Node):
                         robot_y = robot_y - self.camera_to_gripper_y
                         robot_z = robot_z - self.camera_to_gripper_z
 
-                        if self.mode == 'OBJECT' and self.selected_class and cls_name.lower() == self.selected_class:
-                            target_msg = Point()
-                            target_msg.x = float(robot_x)
-                            target_msg.y = float(robot_y)
-                            target_msg.z = float(robot_z)
-                            self.target_pub.publish(target_msg)
-
-                            now = time.time()
-                            if now - self.last_pub_log_time > 0.5:
-                                self.get_logger().info(
-                                    f'publish /aruco_target_point (base_link): X={robot_x:.3f}, Y={robot_y:.3f}, Z={robot_z:.3f}'
-                                )
-                                self.last_pub_log_time = now
+                        target_msg = Point()
+                        target_msg.x = float(robot_x)
+                        target_msg.y = float(robot_y)
+                        target_msg.z = float(robot_z)
+                        self.target_pub.publish(target_msg)
 
                         detections_payload.append(
                             {
@@ -345,6 +190,13 @@ class VisionNode(Node):
                                 'z': float(robot_z),
                             }
                         )
+
+                        now = time.time()
+                        if now - self.last_pub_log_time > 0.5:
+                            self.get_logger().info(
+                                f'publish /aruco_target_point (base_link): X={robot_x:.3f}, Y={robot_y:.3f}, Z={robot_z:.3f}'
+                            )
+                            self.last_pub_log_time = now
 
                         blue_color = (255, 0, 0)
                         cv2.rectangle(display_img, (xyxy[0], xyxy[1]), (xyxy[2], xyxy[3]), blue_color, 2)
@@ -373,10 +225,10 @@ class VisionNode(Node):
                             2,
                         )
 
-            detections_payload.sort(key=lambda d: d['u'])
-            detections_msg = String()
-            detections_msg.data = json.dumps({'detections': detections_payload}, ensure_ascii=False)
-            self.detection_pub.publish(detections_msg)
+                detections_payload.sort(key=lambda d: d['u'])
+                detections_msg = String()
+                detections_msg.data = json.dumps({'detections': detections_payload}, ensure_ascii=False)
+                self.detection_pub.publish(detections_msg)
 
             curr_time = time.time()
             if self.prev_time > 0:
@@ -403,7 +255,7 @@ def main():
             if node.latest_frame is not None:
                 with node.frame_lock:
                     display_frame = node.latest_frame.copy()
-                cv2.imshow('Vision Master Node2 (YOLO + Hand)', display_frame)
+                cv2.imshow('Vision Master Node3 (YOLO + Hand)', display_frame)
             if cv2.waitKey(1) & 0xFF == 27:
                 break
     finally:

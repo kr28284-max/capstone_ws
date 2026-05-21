@@ -12,15 +12,14 @@ from moveit_msgs.msg import Constraints, OrientationConstraint, PositionConstrai
 from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
-from sensor_msgs.msg import JointState
 from shape_msgs.msg import SolidPrimitive
 from std_msgs.msg import Bool, Int32, String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 
-class TestNode6(Node):
+class TestNode8(Node):
     def __init__(self):
-        super().__init__('capstone_final')
+        super().__init__('test_node8')
 
         self.callback_group = ReentrantCallbackGroup()
         self.ready = False
@@ -31,10 +30,8 @@ class TestNode6(Node):
 
         self.recognition_wait_sec = 4.0
         self.detect_timeout_sec = 2.0
-        self.class_check_timeout_sec = 2.0
         self.joint_motion_wait_sec = 2.5
         self.fast_transfer_motion_sec = 1.7
-        self.place_transfer_motion_sec = 1.8
 
         self.pick_z_min = 0.0
         self.pick_z_max = 20.0
@@ -49,28 +46,28 @@ class TestNode6(Node):
         # }
         self.place_hover_joints = {
             1: [118.0, -19.0, 14.0, 88.0],
-            2: [157.0, 12.0, -26.0, 73.0],
-            3: [-157.0, 12.0, -26.0, 73.0],
+            2: [160.0, 20.0, -30.0, 72.0],
+            3: [-160.0, 20.0, -30.0, 72.0],
             4: [-118.0, -19.0, 14.0, 88.0],
         }
 
         self.vision_joint_deg = [0.0, -6.0, -24.0, 114.0]
         self.home_joint_deg = [0.0, -6.0, -24.0, 114.0]
         self.hand_recognition_joint_deg = [0.0, -60.0, 20.0, 10.0]
-        # Pick offsets by command: 1=bearing, 2=boltnut, 3=gear, 4=wheel.
+
         #bearing
         self.bearing_pick_offset_x = -0.008
         self.bearing_pick_offset_y = 0.0
         self.bearing_pick_offset_z = 0.053
         #boltnut
-        self.boltnut_pick_offset_x = -0.018
+        self.boltnut_pick_offset_x = -0.020
         self.boltnut_pick_offset_y = 0.0
         self.boltnut_pick_offset_z = 0.058
         #gear
         self.gear_pick_offset_x = -0.005
         self.gear_pick_offset_y = 0.0
         self.gear_pick_offset_z = 0.038
-        #wheel
+        #damper
         self.wheel_pick_offset_x = 0.0
         self.wheel_pick_offset_y = 0.0
         self.wheel_pick_offset_z = 0.040
@@ -82,11 +79,11 @@ class TestNode6(Node):
 #########################
         self.bearing_near_pick_offset_z = 0.02
 
-        self.boltnut_near_pick_offset_z = -0.02
+        self.boltnut_near_pick_offset_z = -0.01
 
         self.gear_near_pick_offset_z = 0.015
 
-        self.wheel_near_pick_offset_z = 0.02
+        self.wheel_near_pick_offset_z = 0.00
 
 #########################
         self.near_bearing_wheel_x_threshold_m = 0.233
@@ -101,7 +98,7 @@ class TestNode6(Node):
 
         self.wheel_near_low_x_pick_offset_z = 0.0
 
-        self.boltnut_near_low_x_pick_offset_x = -0.01
+        self.boltnut_near_low_x_pick_offset_x = -0.005
 
         self.near_gear_x_threshold_m = 0.230
 
@@ -179,6 +176,8 @@ class TestNode6(Node):
             callback_group=self.callback_group,
         )
 
+        self.yolo_enable_pub = self.create_publisher(Bool, '/vision/yolo_enable', 10)
+
         self.detection_sub = self.create_subscription(
             String,
             '/vision/detections',
@@ -200,47 +199,13 @@ class TestNode6(Node):
             10,
             callback_group=self.callback_group,
         )
-        self.hand_detected_sub = self.create_subscription(
-            Bool,
-            '/vision/hand_detected',
-            self.hand_detected_callback,
-            10,
-            callback_group=self.callback_group,
-        )
-        self.hand_sub = self.create_subscription(
-            Int32,
-            '/vision/hand_finger_count',
-            self.hand_finger_callback,
-            10,
-            callback_group=self.callback_group,
-        )
-        self.joint_state_sub = self.create_subscription(
-            JointState,
-            '/joint_states',
-            self.joint_state_callback,
-            10,
-            callback_group=self.callback_group,
-        )
-
         self.latest_detections: List[Dict] = []
         self.latest_detections_stamp = 0.0
         self.det_lock = threading.Lock()
-        self.current_joint_positions: Optional[List[float]] = None
-        self.current_joint_lock = threading.Lock()
-        self.last_finger = -1
-        self.same_finger_count = 0
-        self.required_stable_count = 12
-        self.last_hand_trigger_time = 0.0
-        self.hand_trigger_cooldown_sec = 2.0
-        self.hand_pause_event = threading.Event()
-        self.hand_pause_event.set()
-        self.hand_pause_lock = threading.Lock()
-        self.hand_pause_active = False
-        self.hand_pause_monitor_enabled = False
-        self.pause_input_active = False
 
-        self.get_logger().info('START test_node6')
+        self.get_logger().info('START test_node8')
         threading.Thread(target=self.init_robot_sequence, daemon=True).start()
+        threading.Thread(target=self.keyboard_input_loop, daemon=True).start()
 
     def init_robot_sequence(self):
         if not self.arm_client.wait_for_server(timeout_sec=10.0):
@@ -250,13 +215,42 @@ class TestNode6(Node):
             self.get_logger().error('gripper_cmd 서버 연결 실패')
             return
 
-        self.send_arm_joint_topic(self.hand_recognition_joint_deg)
-        self.wait_joint_motion('손가락 인식자세 이동')
+        self.send_arm_joint_topic(self.vision_joint_deg)
+        self.wait_joint_motion('물체 인식자세 이동')
         self.send_gripper_blocking(0.019)
+
+        # YOLO disable initially
+        self.set_yolo_enable(False)
 
         self.ready = True
         self.busy = False
-        self.get_logger().info('READY 손가락 입력 대기 (/vision/hand_finger_count: 1~4)')
+        self.get_logger().info('READY 키보드 입력 대기: 1=bearing, 2=boltnut, 3=gear, 4=wheel')
+
+    def keyboard_input_loop(self):
+        while rclpy.ok():
+            try:
+                raw = input('pick command [1:bearing, 2:boltnut, 3:gear, 4:wheel, q:quit] > ')
+            except EOFError:
+                self.get_logger().warn('키보드 입력을 사용할 수 없습니다. /pick_command 토픽 입력은 계속 사용 가능합니다.')
+                return
+            except Exception as exc:
+                self.get_logger().warn(f'키보드 입력 오류: {exc}')
+                return
+
+            text = raw.strip().lower()
+            if text in ('q', 'quit', 'exit'):
+                self.get_logger().info('키보드 종료 요청')
+                rclpy.shutdown()
+                return
+            if not text:
+                continue
+            try:
+                cmd = int(text)
+            except ValueError:
+                self.get_logger().warn(f'숫자 1~4 또는 q를 입력하세요: {text}')
+                continue
+
+            self.request_command(cmd, source='keyboard')
 
     def detection_callback(self, msg: String):
         try:
@@ -289,58 +283,6 @@ class TestNode6(Node):
     def command_callback(self, msg: Int32):
         self.request_command(int(msg.data), source='topic')
 
-    def joint_state_callback(self, msg: JointState):
-        if not msg.position:
-            return
-
-        joint_names = ['joint1', 'joint2', 'joint3', 'joint4']
-        positions_by_name = dict(zip(msg.name, msg.position))
-        if all(name in positions_by_name for name in joint_names):
-            positions = [float(positions_by_name[name]) for name in joint_names]
-        elif len(msg.position) >= 4:
-            positions = [float(pos) for pos in msg.position[:4]]
-        else:
-            return
-
-        with self.current_joint_lock:
-            self.current_joint_positions = positions
-
-    def hand_detected_callback(self, msg: Bool):
-        if msg.data:
-            self.request_hand_safety_pause()
-
-    def clear_latest_detections(self):
-        with self.det_lock:
-            self.latest_detections = []
-            self.latest_detections_stamp = 0.0
-
-    def hand_finger_callback(self, msg: Int32):
-        finger = int(msg.data)
-
-        
-        if finger < 1 or finger > 4:
-            self.last_finger = finger
-            self.same_finger_count = 0
-            return
-
-        if finger == self.last_finger:
-            self.same_finger_count += 1
-        else:
-            self.last_finger = finger
-            self.same_finger_count = 1
-
-        if self.same_finger_count < self.required_stable_count:
-            return
-
-        now = time.time()
-        if now - self.last_hand_trigger_time < self.hand_trigger_cooldown_sec:
-            return
-
-        # ?��?�� ?���??�� ?���? ?��?��?��?�� 중복 발사�? 막기 ?��?�� 콜백 카운?�� 리셋
-        self.same_finger_count = 0
-        self.last_hand_trigger_time = now
-        self.request_command(finger, source='hand')
-
     def request_command(self, cmd: int, source: str):
         if cmd not in self.command_name:
             self.get_logger().warn(f'[{source}] 지원하지 않는 명령: {cmd}')
@@ -353,100 +295,40 @@ class TestNode6(Node):
             return
 
         self.busy = True
-        self.get_logger().info(f'[{source}] 명령 접수: {cmd}({self.command_name[cmd]})')
         threading.Thread(target=self.run_command_sequence, args=(cmd,), daemon=True).start()
-
-    def request_hand_safety_pause(self):
-        with self.hand_pause_lock:
-            if not self.busy or not self.hand_pause_monitor_enabled or self.hand_pause_active:
-                return
-            self.hand_pause_active = True
-            self.hand_pause_event.clear()
-            should_start_input_thread = not self.pause_input_active
-            self.pause_input_active = True
-
-        self.get_logger().warn('작업 중 손 감지: 로봇팔 정지 후 okay 입력 대기')
-        self.stop_arm_motion()
-        self.clear_latest_detections()
-
-        if should_start_input_thread:
-            threading.Thread(target=self.wait_for_input, daemon=True).start()
-
-    def wait_for_input(self):
-        while rclpy.ok():
-            try:
-                text = input('손을 치운 뒤 okay 입력 > ').strip().lower()
-            except EOFError:
-                self.get_logger().error('터미널 입력을 사용할 수 없어 일시정지를 해제할 수 없습니다.')
-                time.sleep(1.0)
-                continue
-            except Exception as exc:
-                self.get_logger().warn(f'okay 입력 오류: {exc}')
-                time.sleep(0.2)
-                continue
-
-            if text == 'okay':
-                with self.hand_pause_lock:
-                    self.hand_pause_active = False
-                    self.pause_input_active = False
-                    self.hand_pause_event.set()
-                self.clear_latest_detections()
-                self.get_logger().info('okay 입력 확인. 중단된 작업을 다시 진행합니다.')
-                return
-
-            self.get_logger().warn('계속하려면 okay 를 입력하세요.')
-
-    def wait_if_hand_paused(self):
-        was_paused = False
-        while rclpy.ok() and not self.hand_pause_event.wait(0.1):
-            was_paused = True
-        return was_paused
 
     def run_command_sequence(self, cmd: int):
         name = self.command_name[cmd]
         count = 0
-        self.get_logger().info(f'{cmd}({name})')
+        self.get_logger().info(f'명령 {cmd}({name}) 처리 시작')
         try:
             while rclpy.ok():
-                self.hand_pause_monitor_enabled = False
-                self.send_arm_joint_topic_blocking(self.vision_joint_deg, '물체 인식자세 이동')
-                self.hand_pause_monitor_enabled = True
-                self.wait_if_hand_paused()
-                self.clear_latest_detections()
+                self.send_arm_joint_topic(self.vision_joint_deg)
+                self.wait_joint_motion('물체 인식자세 이동')
+                self.set_yolo_enable(True)  # YOLO enable for object detection
+                self.wait_recognition()
 
-                first_target = self.find_leftmost_target(cmd, self.class_check_timeout_sec)
-                self.wait_if_hand_paused()
-                if first_target is None:
+                target = self.find_leftmost_target(cmd, self.detect_timeout_sec)
+                self.set_yolo_enable(False)  # YOLO disable after detection
+                if target is None:
                     self.get_logger().info(f'{name} 추가 물체 없음. 총 {count}개 처리 후 종료')
                     break
 
-                self.get_logger().info(f'{name} 좌표 안정화를 위해 대기')
-                self.wait_recognition()
-                self.wait_if_hand_paused()
-
-                target = self.find_leftmost_target(cmd, self.detect_timeout_sec)
-                self.wait_if_hand_paused()
-                if target is None:
-                    self.get_logger().info(f'{name} class 확인 후 좌표 확정 실패. 총 {count}개 처리 후 종료')
-                    break
-                okay = self.execute_enhanced_sequence(cmd, target)
-                if not okay:
+                ok = self.execute_enhanced_sequence(cmd, target)
+                if not ok:
                     self.get_logger().warn('시퀀스 실패로 중단')
                     break
                 count += 1
         finally:
-            self.hand_pause_monitor_enabled = False
-            self.send_arm_joint_topic_blocking(self.hand_recognition_joint_deg, '손가락 인식자세 복귀')
+            self.set_yolo_enable(False)  # Ensure YOLO is disabled
+            self.send_arm_joint_topic(self.vision_joint_deg)
+            self.wait_joint_motion('물체 인식자세 복귀')
             self.busy = False
             self.get_logger().info('FINISH 다음 명령 대기')
 
     def find_leftmost_target(self, cmd: int, timeout_sec: float) -> Optional[Dict]:
         deadline = time.time() + timeout_sec
         while rclpy.ok() and time.time() < deadline:
-            if not self.hand_pause_event.is_set():
-                self.wait_if_hand_paused()
-                deadline = time.time() + timeout_sec
-
             with self.det_lock:
                 dets = list(self.latest_detections)
                 stamp = self.latest_detections_stamp
@@ -518,8 +400,6 @@ class TestNode6(Node):
             return False
 
         self.send_gripper_blocking(-0.01)
-        self.get_logger().info('그리퍼 클로즈 후 1.0초 대기')
-        self.sleep_with_pause(0.3)
 
         if raw_tx <= self.near_x_threshold_m:
             lift_z = min(tz + self.near_after_pick_lift_height, self.pick_z_max)
@@ -531,18 +411,19 @@ class TestNode6(Node):
             self.send_arm_joint_topic_blocking(
                 self.after_pick_waypoint_joints,
                 'pick 후 경유지 이동',
-                self.place_transfer_motion_sec,
+                self.fast_transfer_motion_sec,
             )
 
         self.send_arm_joint_topic_blocking(
             self.place_hover_joints[cmd],
-            f'{cmd}({self.command_name[cmd]}) 분류 상자 이동 성공 joints={self.place_hover_joints[cmd]}',
-            self.place_transfer_motion_sec,
+            '분류 상자 이동 성공',
+            self.fast_transfer_motion_sec,
         )
 
-        self.send_gripper_blocking(0.019)
-        self.get_logger().info('상자 위치 도착 후 그리퍼 오픈, 0.5초 대기')
+        self.get_logger().info('상자 위치에서 0.5초 대기')
         self.sleep_with_pause(0.5)
+
+        self.send_gripper_blocking(0.019)
         return True
 
     def send_arm_joint_topic(self, joint_degrees: List[float], duration_sec: float = 2.0):
@@ -565,44 +446,11 @@ class TestNode6(Node):
     ) -> bool:
         while rclpy.ok():
             self.send_arm_joint_topic(joint_degrees, duration_sec)
-            paused = self.wait_joint_motion(label, duration_sec)
-            if not paused:
-                return True
-            self.get_logger().info(f'{label}: okay 확인 후 같은 joint 목표 재전송')
+            self.wait_joint_motion(label, duration_sec)
+            return True
         return False
-
-    def stop_arm_motion(self):
-        with self.current_joint_lock:
-            current_positions = list(self.current_joint_positions) if self.current_joint_positions is not None else None
-
-        if current_positions is None:
-            self.get_logger().warn('현재 joint_states가 없어 즉시 정지 trajectory를 보낼 수 없습니다.')
-            return
-
-        msg = JointTrajectory()
-        msg.joint_names = ['joint1', 'joint2', 'joint3', 'joint4']
-
-        point = JointTrajectoryPoint()
-        point.positions = current_positions
-        point.velocities = [0.0] * len(current_positions)
-        point.time_from_start.sec = 0
-        point.time_from_start.nanosec = 100_000_000
-
-        msg.points.append(point)
-        self.arm_pub.publish(msg)
 
     def send_precise_goal_blocking(self, x: float, y: float, z: float) -> bool:
-        while rclpy.ok():
-            result = self.send_precise_goal_once(x, y, z)
-            if result is None:
-                self.get_logger().info(
-                    f'okay 확인 후 MoveIt 목표 재시도: target=({x:.3f}, {y:.3f}, {z:.3f})'
-                )
-                continue
-            return result
-        return False
-
-    def send_precise_goal_once(self, x: float, y: float, z: float) -> Optional[bool]:
         goal_msg = MoveGroup.Goal()
         goal_msg.request.group_name = 'arm'
         goal_msg.request.allowed_planning_time = 3.0
@@ -626,7 +474,7 @@ class TestNode6(Node):
         p_con.constraint_region.primitive_poses.append(target_pose)
         constraints.position_constraints.append(p_con)
 
-        if x < 0.216:
+        if x < 0.220:
             tolerance = 50.0
         else:
             tolerance = 35.0
@@ -636,7 +484,7 @@ class TestNode6(Node):
         o_con.link_name = self.ee_link_name
         o_con.orientation = target_pose.orientation
         o_con.absolute_x_axis_tolerance = math.radians(tolerance)
-        o_con.absolute_y_axis_tolerance = math.radians(tolerance)
+        o_con.absolute_y_axis_tolerance = math.radians(tolerance )
         o_con.absolute_z_axis_tolerance = math.radians(180.0)
         o_con.weight = 1.0
         constraints.orientation_constraints.append(o_con)
@@ -645,9 +493,6 @@ class TestNode6(Node):
 
         future = self.arm_client.send_goal_async(goal_msg)
         while rclpy.ok() and not future.done():
-            if not self.hand_pause_event.is_set():
-                self.wait_if_hand_paused()
-                return None
             time.sleep(0.05)
 
         goal_handle = future.result()
@@ -657,12 +502,6 @@ class TestNode6(Node):
 
         result_future = goal_handle.get_result_async()
         while rclpy.ok() and not result_future.done():
-            if not self.hand_pause_event.is_set():
-                cancel_future = goal_handle.cancel_goal_async()
-                while rclpy.ok() and not cancel_future.done():
-                    time.sleep(0.02)
-                self.wait_if_hand_paused()
-                return None
             time.sleep(0.05)
 
         result = result_future.result()
@@ -679,41 +518,38 @@ class TestNode6(Node):
         goal.command.position = float(position)
         future = self.gripper_client.send_goal_async(goal)
         while rclpy.ok() and not future.done():
-            self.wait_if_hand_paused()
             time.sleep(0.05)
-        self.sleep_with_pause(0.6)
+        time.sleep(0.6)
         return True
+
+    def set_yolo_enable(self, enable: bool):
+        msg = Bool()
+        msg.data = enable
+        self.yolo_enable_pub.publish(msg)
+        self.get_logger().info(f'YOLO enable: {enable}')
 
     def wait_recognition(self):
         self.get_logger().info(f'인식안정화를 위해 {self.recognition_wait_sec:.1f}s 대기')
-        self.sleep_with_pause(self.recognition_wait_sec)
+        time.sleep(self.recognition_wait_sec)
 
     def wait_joint_motion(self, _label: str, wait_sec: Optional[float] = None):
-        return self.sleep_with_pause(self.joint_motion_wait_sec if wait_sec is None else wait_sec)
+        time.sleep(self.joint_motion_wait_sec if wait_sec is None else wait_sec)
 
     def sleep_with_pause(self, duration_sec: float):
-        remaining = duration_sec
-        paused = False
-        while rclpy.ok() and remaining > 0.0:
-            if not self.hand_pause_event.is_set():
-                paused = True
-                self.wait_if_hand_paused()
-            sleep_time = min(0.05, remaining)
-            time.sleep(sleep_time)
-            remaining -= sleep_time
-        return paused
+        time.sleep(duration_sec)
 
 
 def main():
     rclpy.init()
-    node = TestNode6()
+    node = TestNode8()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

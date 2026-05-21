@@ -1,3 +1,6 @@
+import os
+from glob import glob
+
 from setuptools import find_packages, setup
 
 package_name = 'control_pkg'
@@ -10,6 +13,7 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -25,6 +29,11 @@ setup(
             'test_node3 = control_pkg.test_node3:main',
             'test_node4 = control_pkg.test_node4:main',
             'test_node5 = control_pkg.test_node5:main',
+            'test_node6 = control_pkg.test_node6:main',
+            'test_node7 = control_pkg.test_node7:main',
+            'test_node8 = control_pkg.test_node8:main',
+            'test_node9 = control_pkg.test_node9:main',
+            'manual_pose_node = control_pkg.manual_pose_node:main',
         ],
     },
 )

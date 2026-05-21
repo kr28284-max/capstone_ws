@@ -1,55 +1,73 @@
-import rclpy
-from rclpy.node import Node
-from geometry_msgs.msg import Point
-from std_msgs.msg import String
-import pyrealsense2 as rs
-from ultralytics import YOLO
-import cv2
-import numpy as np
+import json
 import threading
 import time
-import json
+
+import cv2
+import mediapipe as mp
+import numpy as np
+import pyrealsense2 as rs
+import rclpy
+from collections import deque, Counter
+from geometry_msgs.msg import Point
+from rclpy.node import Node
+from std_msgs.msg import Bool, Int32, String
+from ultralytics import YOLO
+
 
 class VisionNode(Node):
     def __init__(self):
-        super().__init__('vision_node')
+        super().__init__('vision_master_node2')
 
-        # ------------------------------------------------------------
         # base_link 변환 파라미터 (관측 자세 기준)
-        # ------------------------------------------------------------
-        # 아래 값은 "물체 인식할 때 로봇이 서 있는 고정 자세"에서,
-        # 카메라 원점이 base_link 기준 어디에 있는지를 의미합니다. (단위: m)
-        # 실기에서 한 번 캘리브레이션 후 값만 조정하면 됩니다.
-        self.cam_origin_x_in_base = 0.023  # base_link x(전방) 방향 오프셋
-        self.cam_origin_y_in_base = 0.000  # base_link y(좌측) 방향 오프셋
-        self.cam_origin_z_in_base = 0.26  # base_link z(상방) 방향 오프셋(카메라 높이 26cm)
-        # 카메라가 그리퍼 중심보다 +X 방향(전방)으로 떨어진 거리 (m)
-        # 그리퍼 중심 목표로 쓰려면 물체 X에서 이 값을 빼서 보정합니다.
-        self.camera_to_gripper_x = -0.2
-        # 카메라가 그리퍼 중심보다 +Y 방향(좌측)으로 떨어진 거리 (m)
-        # 즉, 그리퍼 중심 목표로 쓰려면 물체 Y에서 이 값을 빼서 보정합니다.
-        self.camera_to_gripper_y = -0.0325
+        self.cam_origin_x_in_base = 0.19
+        self.cam_origin_y_in_base = 0.0225
+        self.cam_origin_z_in_base = 0.177
+        self.camera_to_gripper_x = -0.055
+        self.camera_to_gripper_y = -0.0225
+        self.camera_to_gripper_z = -0.072
+        self.depth_min_m = 0.10
+        self.depth_max_m = 1.20
 
-        # 1. 모델 로드 및 CPU 최적화 설정
-        # 가중치 파일 경로는 본인의 환경에 맞춰 수정하세요.
-        self.model = YOLO("/home/user/capstone_ws/best.pt")
+        # YOLO
+        self.model = YOLO('/home/user2/capstone_ws/best.pt')
         self.class_names = self.model.names
-        self.prev_time = 0
+        self.class_aliases = {
+            'bearing': 'bearing',
+            'bolt_nut': 'boltnut',
+            'bolt-nut': 'boltnut',
+            'bolt nut': 'boltnut',
+            'boltnut': 'boltnut',
+            'gear': 'gear',
+            'damper': 'damper',
+        }
+        self.prev_time = 0.0
         self.last_pub_log_time = 0.0
-        
-        # 2. 리얼센스 파이프라인 설정 (노트북 직결 모드)
+        self.last_frame_timeout_log_time = 0.0
+        self.yolo_enabled = True
+
+
+        # MediaPipe Hands
+        mp_hands = mp.solutions.hands
+        self.mp_draw = mp.solutions.drawing_utils
+        self.mp_hands = mp_hands
+        self.hands = mp_hands.Hands(
+            max_num_hands=1,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5,
+        )
+
+        # RealSense
         self.pipeline = rs.pipeline()
         config = rs.config()
-        # CPU 부하를 줄이기 위해 30 FPS로 설정합니다.
         config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
         config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
-        
+
         try:
             profile = self.pipeline.start(config)
-            self.get_logger().info("✅ 리얼센스 카메라 연결 성공")
+            self.get_logger().info('Realsense camera started')
         except Exception as e:
-            self.get_logger().error(f"❌ 카메라 시작 실패: {e}")
-            return
+            self.get_logger().error(f'Failed to start camera: {e}')
+            raise
 
         self.align = rs.align(rs.stream.color)
         self.intrinsics = profile.get_stream(rs.stream.color).as_video_stream_profile().get_intrinsics()
@@ -57,166 +75,363 @@ class VisionNode(Node):
         self.latest_frame = None
         self.frame_lock = threading.Lock()
 
-        # 3. 좌표 발행 퍼블리셔 (마스터 노드가 구독하는 이름)
+        # Publishers
         self.target_pub = self.create_publisher(Point, '/aruco_target_point', 10)
         self.detection_pub = self.create_publisher(String, '/vision/detections', 10)
+        self.finger_pub = self.create_publisher(Int32, '/vision/hand_finger_count', 10)
+        self.hand_detected_pub = self.create_publisher(Bool, '/vision/hand_detected', 10)
 
-        # 연산 주기를 0.03초(약 30 FPS)로 설정
+        self.mode = 'HAND'
+        self.class_map = {
+            1: 'bearing',
+            2: 'boltnut',
+            3: 'gear',
+            4: 'damper',
+        }
+        self.scan_history = deque(maxlen=30)
+        self.scan_start_time = None
+        self.SCAN_DURATION = 2.0
+        self.object_start_time = None
+        self.OBJECT_DURATION = 4.0
+        self.mediapipe_pause_until = 0
+        self.HAND_CLOSE_MIN_SIZE = 120
+        self.hand_return_start = None
+        self.HAND_RETURN_DURATION = 1.5
+        self.selected_class = None
+        self.last_results = None
+
+        # Subscribers
+        self.yolo_enable_sub = self.create_subscription(Bool, '/vision/yolo_enable', self.yolo_enable_callback, 10)
+
         self.create_timer(0.03, self.process_frame)
-        self.get_logger().info("🚀 6D Pose 스타일 비전 시스템 가동 시작")
+        self.get_logger().info('vision_master_node2 started (YOLO + MediaPipe Hands)')
+
+    def yolo_enable_callback(self, msg: Bool):
+        self.yolo_enabled = True
+        self.get_logger().info('YOLO always enabled')
+
+    def get_valid_depth(self, depth_frame, u: int, v: int):
+        depths = []
+        for dv in range(-3, 4):
+            py = max(0, min(v + dv, 479))
+            for du in range(-3, 4):
+                px = max(0, min(u + du, 639))
+                depth_m = depth_frame.get_distance(px, py)
+                if self.depth_min_m < depth_m < self.depth_max_m:
+                    depths.append(depth_m)
+        if not depths:
+            return None
+        return float(np.median(depths))
+
+    @staticmethod
+    def count_fingers(lm, hand_label):
+        fingers = []
+        if hand_label == 'Right':
+            fingers.append(1 if lm[4][0] < lm[3][0] else 0)
+        else:
+            fingers.append(1 if lm[4][0] > lm[3][0] else 0)
+
+        tips = [8, 12, 16, 20]
+        pips = [6, 10, 14, 18]
+        for tip, pip in zip(tips, pips):
+            fingers.append(1 if lm[tip][1] < lm[pip][1] else 0)
+        return sum(fingers)
 
     def process_frame(self):
         try:
-            # 프레임 수신 및 정렬
-            frames = self.pipeline.wait_for_frames(timeout_ms=100)
+            frames = self.pipeline.wait_for_frames(timeout_ms=1000)
             aligned_frames = self.align.process(frames)
             depth_frame = aligned_frames.get_depth_frame()
             color_frame = aligned_frames.get_color_frame()
-
             if not color_frame or not depth_frame:
                 return
 
             color_image = np.asanyarray(color_frame.get_data())
             display_img = color_image.copy()
-
-            # 중앙 빨간 점 (화면 중심 기준점)
+            h, w, _ = display_img.shape
             cv2.circle(display_img, (320, 240), 4, (0, 0, 255), -1)
+            current_time = time.time()
 
-            # 🚀 [핵심 최적화] imgsz=320 설정으로 CPU 속도 향상
-            results = self.model.predict(display_img, verbose=False, imgsz=320, device='cpu')[0]
+            def put_text_right(text, y, font_scale=0.7, color=(255, 255, 255), thickness=2):
+                (tw, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+                x = max(10, w - tw - 10)
+                cv2.putText(display_img, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, thickness)
+
+            # Hand detection + finger count publish
+            rgb = cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB)
+            hand_result = self.hands.process(rgb)
+            finger_count = -1
+            hand_detected = False
+            hand_close = False
+            if hand_result.multi_hand_landmarks:
+                for idx, hand_landmarks in enumerate(hand_result.multi_hand_landmarks):
+                    h, w, _ = display_img.shape
+                    lm = [(int(p.x * w), int(p.y * h)) for p in hand_landmarks.landmark]
+
+                    xs = [pt[0] for pt in lm]
+                    ys = [pt[1] for pt in lm]
+                    hand_size = max(max(xs) - min(xs), max(ys) - min(ys))
+                    if hand_size >= self.HAND_CLOSE_MIN_SIZE:
+                        hand_label = (
+                            hand_result.multi_handedness[idx]
+                            .classification[0]
+                            .label
+                        )
+                        finger_count = self.count_fingers(lm, hand_label)
+                        hand_detected = True
+                        hand_close = True
+
+                        self.mp_draw.draw_landmarks(display_img, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
+                        display_label = 'Left' if hand_label == 'Right' else 'Right'
+                        put_text_right(
+                            f"{display_label} Hand",
+                            90,
+                            font_scale=0.6,
+                            color=(255, 255, 0),
+                            thickness=2,
+                        )
+                    else:
+                        cv2.putText(
+                            display_img,
+                            "HAND TOO FAR",
+                            (10, 60),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7,
+                            (0, 0, 255),
+                            2
+                        )
+                    break
+
+            finger_msg = Int32()
+            finger_msg.data = int(finger_count)
+            self.finger_pub.publish(finger_msg)
+            hand_msg = Bool()
+            hand_msg.data = bool(hand_detected)
+            self.hand_detected_pub.publish(hand_msg)
+
+            if self.mode == 'HAND':
+                if finger_count in self.class_map and hand_close:
+                    if self.scan_start_time is None:
+                        self.scan_start_time = current_time
+                    self.scan_history.append(finger_count)
+                    if current_time - self.scan_start_time > self.SCAN_DURATION:
+                        most_common = Counter(self.scan_history).most_common(1)[0][0]
+                        self.selected_class = self.class_map[most_common]
+                        self.mode = 'OBJECT'
+                        self.object_start_time = current_time
+                        self.mediapipe_pause_until = current_time + 2.0
+                        self.scan_history.clear()
+                        self.scan_start_time = None
+                else:
+                    self.scan_start_time = None
+                    self.scan_history.clear()
+
+                if finger_count >= 0:
+                    put_text_right(
+                        f'Fingers: {finger_count}',
+                        115,
+                        font_scale=0.8,
+                        color=(0, 255, 255),
+                        thickness=2,
+                    )
+                if self.scan_start_time:
+                    put_text_right(
+                        'SCANNING...',
+                        145,
+                        font_scale=0.6,
+                        color=(0, 255, 255),
+                        thickness=2,
+                    )
+            else:
+                if hand_close:
+                    if self.hand_return_start is None:
+                        self.hand_return_start = current_time
+                    elif current_time - self.hand_return_start > self.HAND_RETURN_DURATION:
+                        self.mode = 'HAND'
+                        self.selected_class = None
+                        self.last_results = None
+                        self.scan_history.clear()
+                        self.scan_start_time = None
+                        self.hand_return_start = None
+
+                        put_text_right(
+                            'RETURN TO HAND MODE',
+                            120,
+                            font_scale=0.7,
+                            color=(0, 0, 255),
+                            thickness=2,
+                        )
+                else:
+                    self.hand_return_start = None
+
+                if self.selected_class:
+                    put_text_right(
+                        f'TARGET: {self.selected_class}',
+                        30,
+                        font_scale=0.7,
+                        color=(255, 0, 0),
+                        thickness=2,
+                    )
+                if current_time < self.mediapipe_pause_until:
+                    put_text_right(
+                        'Waiting',
+                        60,
+                        font_scale=0.6,
+                        color=(0, 165, 255),
+                        thickness=2,
+                    )
+                else:
+                    put_text_right(
+                        'SHOW HAND TO RETURN',
+                        60,
+                        font_scale=0.6,
+                        color=(0, 255, 255),
+                        thickness=2,
+                    )
+
+                if self.object_start_time is not None and current_time - self.object_start_time > self.OBJECT_DURATION:
+                    self.mode = 'HAND'
+                    self.selected_class = None
+                    self.last_results = None
+                    self.scan_history.clear()
+                    self.scan_start_time = None
+                    self.hand_return_start = None
 
             detections_payload = []
-            if results.boxes is not None:
-                for box in results.boxes:
-                    # 데이터 추출
-                    xyxy = box.xyxy[0].cpu().numpy().astype(int)
-                    conf = box.conf[0].cpu().numpy()
-                    cls_id = int(box.cls[0])
-                    cls_name = self.class_names[cls_id]
-                    
-                    # 객체 중심점(u, v) 계산 및 경계 처리
-                    u, v = int((xyxy[0] + xyxy[2]) / 2), int((xyxy[1] + xyxy[3]) / 2)
-                    u, v = max(0, min(u, 639)), max(0, min(v, 479))
-                    
-                    # --------------------------------------------------------
-                    # Depth 기반 좌표 계산:
-                    # 홈/인식 자세가 바뀌어도 고정 높이 가정보다 안정적입니다.
-                    # --------------------------------------------------------
-                    depth_m = depth_frame.get_distance(u, v)
-                    if 0.10 < depth_m < 1.20:
+            if self.yolo_enabled:
+                results = self.model.predict(display_img, verbose=False, imgsz=320, device='cpu')[0]
+                self.last_results = results
+
+                if results.boxes is not None:
+                    for box in results.boxes:
+                        xyxy = box.xyxy[0].cpu().numpy().astype(int)
+                        conf = float(box.conf[0].cpu().numpy())
+                        cls_id = int(box.cls[0])
+                        cls_name = self.class_names[cls_id]
+                        cls_name_lower = str(cls_name).lower()
+                        mapped_name = self.class_aliases.get(cls_name_lower, cls_name_lower)
+
+                        u = int((xyxy[0] + xyxy[2]) / 2)
+                        v = int((xyxy[1] + xyxy[3]) / 2)
+                        u = max(0, min(u, 639))
+                        v = max(0, min(v, 479))
+
+                        depth_m = self.get_valid_depth(depth_frame, u, v)
+                        if depth_m is None:
+                            continue
+
                         point_3d = rs.rs2_deproject_pixel_to_point(self.intrinsics, [u, v], depth_m)
-                        cam_x = float(point_3d[0])  # optical +X (right)
-                        cam_y = float(point_3d[1])  # optical +Y (down)
-                    else:
-                        # 깊이값이 불량하면 기존 평면 근사로 fallback
-                        fx = self.intrinsics.fx
-                        fy = self.intrinsics.fy
-                        cx = self.intrinsics.ppx
-                        cy = self.intrinsics.ppy
-                        cam_x = (u - cx) / fx * self.cam_origin_z_in_base
-                        cam_y = (v - cy) / fy * self.cam_origin_z_in_base
+                        cam_x = float(point_3d[0])
+                        cam_y = float(point_3d[1])
+                        cam_z = float(point_3d[2])
 
-                    # --------------------------------------------------------
-                    # 카메라(optical frame) -> base_link 좌표 변환
-                    # --------------------------------------------------------
-                    # 가정: 홈 자세에서 카메라가 바닥을 향함.
-                    #   optical +X(이미지 오른쪽) -> base -Y
-                    #   optical +Y(이미지 아래)   -> base -X
-                    # 필요하면 부호는 실기 기준으로 조정하세요.
-                    robot_x = self.cam_origin_x_in_base - cam_y
-                    robot_y = self.cam_origin_y_in_base - cam_x
+                        robot_x = self.cam_origin_x_in_base - cam_y
+                        robot_y = self.cam_origin_y_in_base - cam_x
+                        robot_z = self.cam_origin_z_in_base - cam_z 
 
-                    # 카메라-그리퍼 오프셋 보정
-                    robot_x = robot_x - self.camera_to_gripper_x
-                    robot_y = robot_y - self.camera_to_gripper_y
+                        robot_x = robot_x - self.camera_to_gripper_x
+                        robot_y = robot_y - self.camera_to_gripper_y
+                        robot_z = robot_z - self.camera_to_gripper_z
 
-                    # 물체가 바닥 위에 있다고 보고 base_link 높이는 고정
-                    robot_z = 0.035
+                        if self.mode == 'OBJECT' and self.selected_class and mapped_name == self.selected_class:
+                            target_msg = Point()
+                            target_msg.x = float(robot_x)
+                            target_msg.y = float(robot_y)
+                            target_msg.z = float(robot_z)
+                            self.target_pub.publish(target_msg)
 
-                    # 4. 마스터 노드로 발행 (m 단위)
-                    target_msg = Point()
-                    target_msg.x = float(robot_x)
-                    target_msg.y = float(robot_y)
-                    target_msg.z = float(robot_z)
-                    self.target_pub.publish(target_msg)
+                            now = time.time()
+                            if now - self.last_pub_log_time > 0.5:
+                                self.get_logger().info(
+                                    f'publish /aruco_target_point (base_link): X={robot_x:.3f}, Y={robot_y:.3f}, Z={robot_z:.3f}'
+                                )
+                                self.last_pub_log_time = now
 
-                    detections_payload.append(
-                        {
-                            "class_id": int(cls_id),
-                            "class_name": str(cls_name).lower(),
-                            "u": float(u),
-                            "v": float(v),
-                            "x": float(robot_x),
-                            "y": float(robot_y),
-                            "z": float(robot_z),
-                        }
-                    )
-                    # 발행 좌표 로그 (너무 많이 찍히지 않도록 0.5초 간격 제한)
-                    now = time.time()
-                    if now - self.last_pub_log_time > 0.5:
-                        self.get_logger().info(
-                            f"📤 publish /aruco_target_point (base_link): "
-                            f"X={robot_x:.3f}, Y={robot_y:.3f}, Z={robot_z:.3f}"
+                        detections_payload.append(
+                            {
+                                'class_id': int(cls_id),
+                                'class_name': mapped_name,
+                                'u': float(u),
+                                'v': float(v),
+                                'x': float(robot_x),
+                                'y': float(robot_y),
+                                'z': float(robot_z),
+                            }
                         )
-                        self.last_pub_log_time = now
 
-                    # 🎨 [시각화: 요청하신 스타일 적용]
-                    blue_color = (255, 0, 0)
-                    # 파란색 바운딩 박스
-                    cv2.rectangle(display_img, (xyxy[0], xyxy[1]), (xyxy[2], xyxy[3]), blue_color, 2)
-                    
-                    # 상단 라벨 (이름 + 신뢰도)
-                    label_top = f"{cls_name.upper()} {conf:.2f}"
-                    (tw, th), _ = cv2.getTextSize(label_top, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-                    cv2.rectangle(display_img, (xyxy[0], xyxy[1] - th - 10), (xyxy[0] + tw, xyxy[1]), blue_color, -1)
-                    cv2.putText(display_img, label_top, (xyxy[0], xyxy[1] - 7), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                        blue_color = (255, 0, 0)
+                        cv2.rectangle(display_img, (xyxy[0], xyxy[1]), (xyxy[2], xyxy[3]), blue_color, 2)
 
-                    # 하단 XYZ 좌표 (base_link 기준, mm 단위 표시)
-                    label_bot = f"X:{robot_x*1000:.1f} Y:{robot_y*1000:.1f} Z:{robot_z*1000:.1f}"
-                    cv2.putText(display_img, label_bot, (xyxy[0], xyxy[3] - 10), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                        # 표시 라벨은 매핑된 이름 사용
+                        label_top = f'{mapped_name.upper()} {conf:.2f}'
+                        (tw, th), _ = cv2.getTextSize(label_top, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                        cv2.rectangle(display_img, (xyxy[0], xyxy[1] - th - 10), (xyxy[0] + tw, xyxy[1]), blue_color, -1)
+                        cv2.putText(
+                            display_img,
+                            label_top,
+                            (xyxy[0], xyxy[1] - 7),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.6,
+                            (255, 255, 255),
+                            2,
+                        )
 
-            detections_payload.sort(key=lambda d: d["u"])
+                        label_bot = f'X:{robot_x*1000:.1f} Y:{robot_y*1000:.1f} Z:{robot_z*1000:.1f}'
+                        cv2.putText(
+                            display_img,
+                            label_bot,
+                            (xyxy[0], xyxy[3] - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            (0, 255, 0),
+                            2,
+                        )
+
+            detections_payload.sort(key=lambda d: d['u'])
             detections_msg = String()
-            detections_msg.data = json.dumps({"detections": detections_payload}, ensure_ascii=False)
+            detections_msg.data = json.dumps({'detections': detections_payload}, ensure_ascii=False)
             self.detection_pub.publish(detections_msg)
 
-            # FPS 표시
             curr_time = time.time()
             if self.prev_time > 0:
                 fps = 1 / (curr_time - self.prev_time)
-                cv2.putText(display_img, f"FPS: {fps:.1f}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
+                cv2.putText(display_img, f'FPS: {fps:.1f}', (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
             self.prev_time = curr_time
 
             with self.frame_lock:
                 self.latest_frame = display_img
 
         except Exception as e:
-            pass
+            if 'Frame didn\'t arrive' in str(e):
+                now = time.time()
+                if now - self.last_frame_timeout_log_time > 2.0:
+                    self.get_logger().warn(f'RealSense frame timeout: {e}')
+                    self.last_frame_timeout_log_time = now
+                return
+            self.get_logger().error(f'process_frame error: {e}')
+
 
 def main():
     rclpy.init()
     node = VisionNode()
-    
-    # GUI 출력을 위한 별도 스레드
+
     ros_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
     ros_thread.start()
-    
+
     try:
         while rclpy.ok():
             if node.latest_frame is not None:
                 with node.frame_lock:
                     display_frame = node.latest_frame.copy()
-                cv2.imshow("6D Pose Style Vision", display_frame)
-            
-            if cv2.waitKey(1) & 0xFF == 27: # ESC 누르면 종료
+                cv2.imshow('Vision Master Node2 (YOLO + Hand)', display_frame)
+            if cv2.waitKey(1) & 0xFF == 27:
                 break
     finally:
         node.pipeline.stop()
         cv2.destroyAllWindows()
         node.destroy_node()
         rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()

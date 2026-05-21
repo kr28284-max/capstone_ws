@@ -34,7 +34,6 @@ class TestNode6(Node):
         self.class_check_timeout_sec = 2.0
         self.joint_motion_wait_sec = 2.5
         self.fast_transfer_motion_sec = 1.7
-        self.place_transfer_motion_sec = 1.8
 
         self.pick_z_min = 0.0
         self.pick_z_max = 20.0
@@ -49,8 +48,8 @@ class TestNode6(Node):
         # }
         self.place_hover_joints = {
             1: [118.0, -19.0, 14.0, 88.0],
-            2: [157.0, 12.0, -26.0, 73.0],
-            3: [-157.0, 12.0, -26.0, 73.0],
+            2: [160.0, 20.0, -30.0, 72.0],
+            3: [-160.0, 20.0, -30.0, 72.0],
             4: [-118.0, -19.0, 14.0, 88.0],
         }
 
@@ -63,17 +62,16 @@ class TestNode6(Node):
         self.bearing_pick_offset_y = 0.0
         self.bearing_pick_offset_z = 0.053
         #boltnut
-        self.boltnut_pick_offset_x = -0.018
+        self.boltnut_pick_offset_x = -0.025
         self.boltnut_pick_offset_y = 0.0
-        self.boltnut_pick_offset_z = 0.058
-        #gear
+        self.boltnut_pick_offset_z = 0.055
         self.gear_pick_offset_x = -0.005
         self.gear_pick_offset_y = 0.0
         self.gear_pick_offset_z = 0.038
         #wheel
         self.wheel_pick_offset_x = 0.0
         self.wheel_pick_offset_y = 0.0
-        self.wheel_pick_offset_z = 0.040
+        self.wheel_pick_offset_z = 0.053
 
 
         self.near_x_threshold_m = 0.210
@@ -353,7 +351,6 @@ class TestNode6(Node):
             return
 
         self.busy = True
-        self.get_logger().info(f'[{source}] 명령 접수: {cmd}({self.command_name[cmd]})')
         threading.Thread(target=self.run_command_sequence, args=(cmd,), daemon=True).start()
 
     def request_hand_safety_pause(self):
@@ -370,9 +367,9 @@ class TestNode6(Node):
         self.clear_latest_detections()
 
         if should_start_input_thread:
-            threading.Thread(target=self.wait_for_input, daemon=True).start()
+            threading.Thread(target=self.wait_for_okay_input, daemon=True).start()
 
-    def wait_for_input(self):
+    def wait_for_okay_input(self):
         while rclpy.ok():
             try:
                 text = input('손을 치운 뒤 okay 입력 > ').strip().lower()
@@ -429,8 +426,8 @@ class TestNode6(Node):
                 if target is None:
                     self.get_logger().info(f'{name} class 확인 후 좌표 확정 실패. 총 {count}개 처리 후 종료')
                     break
-                okay = self.execute_enhanced_sequence(cmd, target)
-                if not okay:
+                ok = self.execute_enhanced_sequence(cmd, target)
+                if not ok:
                     self.get_logger().warn('시퀀스 실패로 중단')
                     break
                 count += 1
@@ -518,8 +515,6 @@ class TestNode6(Node):
             return False
 
         self.send_gripper_blocking(-0.01)
-        self.get_logger().info('그리퍼 클로즈 후 1.0초 대기')
-        self.sleep_with_pause(0.3)
 
         if raw_tx <= self.near_x_threshold_m:
             lift_z = min(tz + self.near_after_pick_lift_height, self.pick_z_max)
@@ -531,18 +526,16 @@ class TestNode6(Node):
             self.send_arm_joint_topic_blocking(
                 self.after_pick_waypoint_joints,
                 'pick 후 경유지 이동',
-                self.place_transfer_motion_sec,
+                self.fast_transfer_motion_sec,
             )
 
         self.send_arm_joint_topic_blocking(
             self.place_hover_joints[cmd],
-            f'{cmd}({self.command_name[cmd]}) 분류 상자 이동 성공 joints={self.place_hover_joints[cmd]}',
-            self.place_transfer_motion_sec,
+            '분류 상자 이동 성공',
+            self.fast_transfer_motion_sec,
         )
 
         self.send_gripper_blocking(0.019)
-        self.get_logger().info('상자 위치 도착 후 그리퍼 오픈, 0.5초 대기')
-        self.sleep_with_pause(0.5)
         return True
 
     def send_arm_joint_topic(self, joint_degrees: List[float], duration_sec: float = 2.0):
@@ -626,7 +619,7 @@ class TestNode6(Node):
         p_con.constraint_region.primitive_poses.append(target_pose)
         constraints.position_constraints.append(p_con)
 
-        if x < 0.216:
+        if x < 0.205:
             tolerance = 50.0
         else:
             tolerance = 35.0
