@@ -34,11 +34,8 @@
   <img src="image/Google_mediaPipe.png" alt="구글 미디어 파이프" width="600">
 </div>
 
-<div align="left">
+<div align="center">
   <img src="image/Labelling2.png" alt="YOLO Labelling" width="300">
-</div>
-
-<div align="right">
   <img src="image/Labelling.png" alt="YOLO Labelling" width="300">
 </div>
 
