@@ -45,7 +45,7 @@
 ### 2. 3차원 좌표 변환 및 모션 플래닝
 
 <div align="center">
-  <img src="image/moveit2.png" alt="moveit2" width="600">
+  <img src="image/moveit2.png" alt="moveit2" width="400">
 </div>
 
 * **좌표 변환:** D435i 깊이 정보와 YOLO 바운딩 박스 중심 좌표를 기반으로 부품의 3차원 위치를 계산한 뒤, Camera 좌표계에서 Robot Base 좌표계로 변환합니다. 안정적인 파지를 위해 접근 위치 파지 오프셋 보정을 적용했습니다.
