@@ -31,12 +31,12 @@
 ### 1. 데이터셋 구축 및 AI 모델 학습
 
 <div align="center">
-  <img src="image/Google_mediaPipe.png" alt="구글 미디어 파이프" width="600">
+  <img src="image/Google_mediaPipe.png" alt="구글 미디어 파이프" width="700">
 </div>
 
 <div align="center">
-  <img src="image/Labelling2.png" alt="YOLO Labelling" width="300">
-  <img src="image/Labelling.png" alt="YOLO Labelling" width="300">
+  <img src="image/Labelling2.png" alt="YOLO Labelling" width="400">
+  <img src="image/Labelling.png" alt="YOLO Labelling" width="400">
 </div>
 
 * **YOLO 기반 부품 인식:** 베어링(bearing), 볼트(boltnut), 기어(gear), 바퀴(wheel) 4종 부품 이미지 데이터를 수집하여 Roboflow 기반 라벨링을 수행했습니다. 전처리 및 데이터 증강을 적용한 통합 데이터셋으로 YOLO 모델을 학습하여 실시간으로 부품 종류와 바운딩 박스 중심 좌표를 추출합니다. 추론 주기 조정을 통해 연산 부하를 줄이고 동작 안정성을 확보했습니다.
