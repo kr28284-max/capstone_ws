@@ -34,6 +34,7 @@ class TestNode6(Node):
         self.class_check_timeout_sec = 2.0
         self.joint_motion_wait_sec = 2.5
         self.fast_transfer_motion_sec = 1.7
+        self.place_transfer_motion_sec = 1.8
 
         self.pick_z_min = 0.0
         self.pick_z_max = 20.0
@@ -48,30 +49,32 @@ class TestNode6(Node):
         # }
         self.place_hover_joints = {
             1: [118.0, -19.0, 14.0, 88.0],
-            2: [160.0, 20.0, -30.0, 72.0],
-            3: [-160.0, 20.0, -30.0, 72.0],
+            2: [157.0, 12.0, -26.0, 73.0],
+            3: [-157.0, 12.0, -26.0, 73.0],
             4: [-118.0, -19.0, 14.0, 88.0],
         }
 
         self.vision_joint_deg = [0.0, -6.0, -24.0, 114.0]
         self.home_joint_deg = [0.0, -6.0, -24.0, 114.0]
         self.hand_recognition_joint_deg = [0.0, -60.0, 20.0, 10.0]
-        # Pick offsets by command: 1=bearing, 2=boltnut, 3=gear, 4=wheel.
+        self.end_joint_deg = [0.0, -80.0, 38.0, 104.0]
+        # Pick offsets by command: 1=wheel, 2=boltnut, 3=gear, 4=bearing.
         #bearing
         self.bearing_pick_offset_x = -0.008
         self.bearing_pick_offset_y = 0.0
         self.bearing_pick_offset_z = 0.053
         #boltnut
-        self.boltnut_pick_offset_x = -0.025
+        self.boltnut_pick_offset_x = -0.018
         self.boltnut_pick_offset_y = 0.0
-        self.boltnut_pick_offset_z = 0.055
+        self.boltnut_pick_offset_z = 0.058
+        #gear
         self.gear_pick_offset_x = -0.005
         self.gear_pick_offset_y = 0.0
         self.gear_pick_offset_z = 0.038
         #wheel
         self.wheel_pick_offset_x = 0.0
         self.wheel_pick_offset_y = 0.0
-        self.wheel_pick_offset_z = 0.053
+        self.wheel_pick_offset_z = 0.040
 
 
         self.near_x_threshold_m = 0.210
@@ -131,41 +134,41 @@ class TestNode6(Node):
         self.wheel_high_y_pick_offset_y = 0.02
 
         self.pick_offsets = {
-            1: (self.bearing_pick_offset_x, self.bearing_pick_offset_y, self.bearing_pick_offset_z),
+            1: (self.wheel_pick_offset_x, self.wheel_pick_offset_y, self.wheel_pick_offset_z),
             2: (self.boltnut_pick_offset_x, self.boltnut_pick_offset_y, self.boltnut_pick_offset_z),
             3: (self.gear_pick_offset_x, self.gear_pick_offset_y, self.gear_pick_offset_z),
-            4: (self.wheel_pick_offset_x, self.wheel_pick_offset_y, self.wheel_pick_offset_z),
+            4: (self.bearing_pick_offset_x, self.bearing_pick_offset_y, self.bearing_pick_offset_z),
         }
         self.near_pick_offset_z = {
-            1: self.bearing_near_pick_offset_z,
+            1: self.wheel_near_pick_offset_z,
             2: self.boltnut_near_pick_offset_z,
             3: self.gear_near_pick_offset_z,
-            4: self.wheel_near_pick_offset_z,
+            4: self.bearing_near_pick_offset_z,
         }
         self.low_y_pick_offset_y = {
-            1: self.bearing_low_y_pick_offset_y,
+            1: self.wheel_low_y_pick_offset_y,
             2: self.boltnut_low_y_pick_offset_y,
             3: self.gear_low_y_pick_offset_y,
-            4: self.wheel_low_y_pick_offset_y,
+            4: self.bearing_low_y_pick_offset_y,
         }
         self.high_y_pick_offset_y = {
-            1: self.bearing_high_y_pick_offset_y,
+            1: self.wheel_high_y_pick_offset_y,
             2: self.boltnut_high_y_pick_offset_y,
             3: self.gear_high_y_pick_offset_y,
-            4: self.wheel_high_y_pick_offset_y,
+            4: self.bearing_high_y_pick_offset_y,
         }
 
         self.command_name = {
-            1: 'bearing',
+            1: 'wheel',
             2: 'boltnut',
             3: 'gear',
-            4: 'wheel',
+            4: 'bearing',
         }
         self.command_class_id = {
-            1: 0,
+            1: 3,
             2: 1,
             3: 2,
-            4: 3,
+            4: 0,
         }
 
         self.arm_pub = self.create_publisher(JointTrajectory, '/arm_controller/joint_trajectory', 10)
@@ -351,6 +354,7 @@ class TestNode6(Node):
             return
 
         self.busy = True
+        self.get_logger().info(f'[{source}] 명령 접수: {cmd}({self.command_name[cmd]})')
         threading.Thread(target=self.run_command_sequence, args=(cmd,), daemon=True).start()
 
     def request_hand_safety_pause(self):
@@ -367,9 +371,9 @@ class TestNode6(Node):
         self.clear_latest_detections()
 
         if should_start_input_thread:
-            threading.Thread(target=self.wait_for_okay_input, daemon=True).start()
+            threading.Thread(target=self.wait_for_input, daemon=True).start()
 
-    def wait_for_okay_input(self):
+    def wait_for_input(self):
         while rclpy.ok():
             try:
                 text = input('손을 치운 뒤 okay 입력 > ').strip().lower()
@@ -402,6 +406,7 @@ class TestNode6(Node):
     def run_command_sequence(self, cmd: int):
         name = self.command_name[cmd]
         count = 0
+        return_to_hand_pose = True
         self.get_logger().info(f'{cmd}({name})')
         try:
             while rclpy.ok():
@@ -415,6 +420,11 @@ class TestNode6(Node):
                 self.wait_if_hand_paused()
                 if first_target is None:
                     self.get_logger().info(f'{name} 추가 물체 없음. 총 {count}개 처리 후 종료')
+                    if self.is_workbench_empty():
+                        self.get_logger().info('워크벤치에 물체 없음. 종료포즈로 이동')
+                        self.hand_pause_monitor_enabled = False
+                        self.send_arm_joint_topic_blocking(self.end_joint_deg, '종료포즈 이동')
+                        return_to_hand_pose = False
                     break
 
                 self.get_logger().info(f'{name} 좌표 안정화를 위해 대기')
@@ -426,14 +436,15 @@ class TestNode6(Node):
                 if target is None:
                     self.get_logger().info(f'{name} class 확인 후 좌표 확정 실패. 총 {count}개 처리 후 종료')
                     break
-                ok = self.execute_enhanced_sequence(cmd, target)
-                if not ok:
+                okay = self.execute_enhanced_sequence(cmd, target)
+                if not okay:
                     self.get_logger().warn('시퀀스 실패로 중단')
                     break
                 count += 1
         finally:
             self.hand_pause_monitor_enabled = False
-            self.send_arm_joint_topic_blocking(self.hand_recognition_joint_deg, '손가락 인식자세 복귀')
+            if return_to_hand_pose:
+                self.send_arm_joint_topic_blocking(self.hand_recognition_joint_deg, '손가락 인식자세 복귀')
             self.busy = False
             self.get_logger().info('FINISH 다음 명령 대기')
 
@@ -456,6 +467,13 @@ class TestNode6(Node):
             time.sleep(0.05)
         return None
 
+    def is_workbench_empty(self) -> bool:
+        with self.det_lock:
+            dets = list(self.latest_detections)
+            stamp = self.latest_detections_stamp
+
+        return not dets and (stamp == 0.0 or (time.time() - stamp) < 2.0)
+
     def is_command_match(self, cmd: int, det: Dict) -> bool:
         if det.get('class_name', '') == self.command_name[cmd]:
             return True
@@ -468,9 +486,9 @@ class TestNode6(Node):
 
         if cmd in (1, 4) and raw_tx < self.near_bearing_wheel_x_threshold_m:
             if cmd == 1:
-                x_offset = self.bearing_near_pick_offset_x
-            else:
                 x_offset = self.wheel_near_pick_offset_x
+            else:
+                x_offset = self.bearing_near_pick_offset_x
         elif cmd == 2 and raw_tx <= self.near_x_threshold_m:
             x_offset = self.boltnut_near_low_x_pick_offset_x
         elif cmd == 3 and raw_tx <= self.near_gear_x_threshold_m and raw_ty > self.gear_near_high_y_threshold_m:
@@ -491,9 +509,9 @@ class TestNode6(Node):
 
         raw_tz = float(target['z'])
         if cmd == 1 and raw_tx < self.near_bearing_wheel_low_x_threshold_m:
-            z_offset = self.bearing_near_low_x_pick_offset_z
-        elif cmd == 4 and raw_tx < self.near_bearing_wheel_low_x_threshold_m:
             z_offset = self.wheel_near_low_x_pick_offset_z
+        elif cmd == 4 and raw_tx < self.near_bearing_wheel_low_x_threshold_m:
+            z_offset = self.bearing_near_low_x_pick_offset_z
         elif cmd == 2 and tx <= self.near_x_threshold_m:
             z_offset = self.boltnut_near_pick_offset_z
         elif cmd == 2 or tx <= self.near_x_threshold_h:
@@ -515,6 +533,8 @@ class TestNode6(Node):
             return False
 
         self.send_gripper_blocking(-0.01)
+        self.get_logger().info('그리퍼 클로즈 후 1.0초 대기')
+        self.sleep_with_pause(0.3)
 
         if raw_tx <= self.near_x_threshold_m:
             lift_z = min(tz + self.near_after_pick_lift_height, self.pick_z_max)
@@ -526,16 +546,18 @@ class TestNode6(Node):
             self.send_arm_joint_topic_blocking(
                 self.after_pick_waypoint_joints,
                 'pick 후 경유지 이동',
-                self.fast_transfer_motion_sec,
+                self.place_transfer_motion_sec,
             )
 
         self.send_arm_joint_topic_blocking(
             self.place_hover_joints[cmd],
-            '분류 상자 이동 성공',
-            self.fast_transfer_motion_sec,
+            f'{cmd}({self.command_name[cmd]}) 분류 상자 이동 성공 joints={self.place_hover_joints[cmd]}',
+            self.place_transfer_motion_sec,
         )
 
         self.send_gripper_blocking(0.019)
+        self.get_logger().info('상자 위치 도착 후 그리퍼 오픈, 0.5초 대기')
+        self.sleep_with_pause(0.5)
         return True
 
     def send_arm_joint_topic(self, joint_degrees: List[float], duration_sec: float = 2.0):
@@ -619,7 +641,7 @@ class TestNode6(Node):
         p_con.constraint_region.primitive_poses.append(target_pose)
         constraints.position_constraints.append(p_con)
 
-        if x < 0.205:
+        if x < 0.216:
             tolerance = 50.0
         else:
             tolerance = 35.0

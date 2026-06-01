@@ -11,6 +11,7 @@ ros2 launch control_pkg capstone_final.launch.py
 
 
 
+ssh fcsl@172.26.213.136
 
 
 

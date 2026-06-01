@@ -8,8 +8,8 @@ def generate_launch_description():
         [
             Node(
                 package='vision_pkg',
-                executable='vision_master_node3',
-                name='vision_node3',
+                executable='vision_master_node4',
+                name='vision_node4',
                 output='screen',
             ),
             ExecuteProcess(
@@ -18,7 +18,7 @@ def generate_launch_description():
                     '--',
                     'bash',
                     '-lc',
-                    'ros2 run control_pkg test_node5; exec bash',
+                    'ros2 run control_pkg test_node7; exec bash',
                 ],
                 output='screen',
             ),
