@@ -10,8 +10,6 @@
 **인천대학교 전기공학과 (Department of Electrical Engineering, Incheon National University)**
 
 ---
-
-## 포스터
 <div align="center">
   <img src="image/2026-1_캡스톤_포스터-1.png" alt="캡스톤 포스터" width="800">
 </div>
