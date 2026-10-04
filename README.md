@@ -11,9 +11,14 @@
 
 ---
 
+## 포스터
+<div align="center">
+  <img src="image/demo.gif" alt="캡스톤 포스터" width="800">
+</div>
+
 ## 🎥 전체 동작 영상
 <div align="center">
-  <img src="image/demo.gif" alt="시스템 전체 동작 데모" width="800">
+  <img src="image/2026-1_캡스톤_포스터-1.png" alt="시스템 전체 동작 데모" width="800">
 </div>
 
 ## 📌 Motivation
